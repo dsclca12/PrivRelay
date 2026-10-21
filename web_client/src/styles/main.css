@@ -1,0 +1,362 @@
+/* ===== 全局基础 ===== */
+:root {
+  --app-sidebar-width: 220px;
+  --app-sidebar-collapsed-width: 64px;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== 主布局 ===== */
+.app-layout {
+  height: 100%;
+}
+
+.app-sidebar {
+  border-right: 1px solid var(--el-border-color-lighter);
+  background: var(--el-bg-color-overlay);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 18px 12px;
+  min-height: 60px;
+}
+
+.brand-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  overflow: hidden;
+}
+
+.brand-name {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.brand-sub {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+}
+
+.app-sidebar .el-menu {
+  border-right: none;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.sidebar-footer {
+  border-top: 1px solid var(--el-border-color-lighter);
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-footer .device-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.sidebar-footer .device-line span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  background: var(--el-bg-color-overlay);
+  padding: 0 20px;
+}
+
+.app-header .page-title {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-header .header-spacer {
+  flex: 1;
+}
+
+.sync-line {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+}
+
+.app-main {
+  background: var(--el-bg-color-page);
+  overflow-y: auto;
+}
+
+/* ===== 通用工具 ===== */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.toolbar .toolbar-spacer {
+  flex: 1;
+}
+
+.muted {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  background: var(--el-bg-color-overlay);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.stat-card .stat-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 6px;
+}
+
+.stat-card .stat-value {
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+.stat-card .stat-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  margin-top: 4px;
+}
+
+/* ===== 消息表 ===== */
+.message-table .cell {
+  line-height: 1.5;
+}
+
+.message-table .el-table__row {
+  cursor: pointer;
+}
+
+.sender-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.sender-cell .sim-tag {
+  flex-shrink: 0;
+}
+
+.body-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ===== 详情抽屉 ===== */
+.detail-body {
+  padding: 0 4px;
+}
+
+.message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.75;
+  background: var(--el-fill-color-light);
+  border-radius: 8px;
+  padding: 14px 16px;
+  font-size: 14px;
+  margin: 12px 0 16px;
+}
+
+.detail-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+  margin: 18px 0 8px;
+}
+
+.drawer-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+/* ===== 登录页 ===== */
+.login-page {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  background:
+    radial-gradient(1000px 500px at 15% -10%, rgba(37, 99, 235, 0.14), transparent 60%),
+    radial-gradient(900px 500px at 110% 110%, rgba(124, 58, 237, 0.12), transparent 55%),
+    var(--el-bg-color-page);
+}
+
+.login-card {
+  width: 440px;
+  max-width: 100%;
+}
+
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  text-align: center;
+}
+
+.login-logo {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+}
+
+.login-title {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.login-subtitle {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.privacy-notes {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.8;
+}
+
+.privacy-notes li {
+  list-style: none;
+}
+
+.privacy-notes {
+  padding-left: 4px;
+}
+
+/* ===== 规则页 ===== */
+.mode-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.mode-card {
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.mode-card.active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+
+.mode-card .mode-name {
+  font-weight: 600;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mode-card .mode-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-top: 6px;
+  line-height: 1.6;
+}
+
+.rules-form {
+  max-width: 860px;
+}
+
+.list-editor {
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+}
+
+/* ===== 监控页 ===== */
+.log-level {
+  text-transform: uppercase;
+  font-size: 11px;
+}
