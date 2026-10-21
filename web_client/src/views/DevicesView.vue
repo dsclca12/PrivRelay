@@ -30,14 +30,18 @@
         type="info"
         :closable="false"
         show-icon
-        title="生成一次性配对码，在手机或另一浏览器中输入。有效期 10 分钟；生成新码会使旧码失效。"
+        title="生成二维码后，在安卓设置中扫码绑定；也可手动输入配对码。有效期 10 分钟，使用一次失效。"
         style="margin-bottom: 14px"
       />
+      <el-input v-model="phoneServer" :disabled="pairing" placeholder="手机可访问的服务器地址，如 https://relay.example.com" style="margin-bottom: 12px" @input="clearPairing" />
+      <el-alert v-if="phoneServer.startsWith('http:')" type="warning" :closable="false" title="正式安卓客户端需要 HTTPS。HTTP 仅供 dev Debug 使用 ADB 回环测试（先执行 adb reverse tcp:8787 tcp:8787，并在手机勾选允许 HTTP）；局域网绑定请使用 HTTPS 地址。" style="margin-bottom: 12px" />
       <div class="toolbar" style="margin-bottom: 0">
         <el-button type="primary" :loading="pairing" @click="handlePair">生成配对码</el-button>
         <el-input v-if="pairingCode" :model-value="pairingCode" readonly style="max-width: 480px" />
         <span v-if="pairingExpires" class="muted">有效至 {{ formatDateTime(pairingExpires * 1000) }}</span>
       </div>
+      <img v-if="qrImage" :src="qrImage" alt="PrivRelay 一次性绑定二维码" style="display: block; width: 256px; max-width: 100%; margin-top: 14px" />
+      <p v-if="qrImage" class="muted">请勿分享二维码；扫码后确认手机显示的服务器地址。</p>
     </el-card>
 
     <el-card shadow="never">
@@ -98,9 +102,11 @@
 
 <script setup lang="ts">
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import QRCode from 'qrcode'
 import { apiBase, ApiError } from '../api/client'
-import { createPairingCode, listDevices, revokeDevice } from '../api/endpoints'
+import { createPairingCode, getPairingStatus, listDevices, revokeDevice } from '../api/endpoints'
+import { buildPairingQr } from '../utils/pairing'
 import type { Device } from '../api/types'
 import { errorText, useAuthStore } from '../stores/auth'
 import { useLogsStore } from '../stores/logs'
@@ -114,6 +120,33 @@ const loading = ref(false)
 const pairing = ref(false)
 const pairingCode = ref('')
 const pairingExpires = ref(0)
+const qrImage = ref('')
+const phoneServer = ref(new URL(apiBase() || '/', location.href).origin)
+let pairingTimer: ReturnType<typeof setInterval> | undefined
+let disposed = false
+
+function clearPairing(): void {
+  pairingCode.value = ''
+  pairingExpires.value = 0
+  qrImage.value = ''
+  clearInterval(pairingTimer)
+}
+
+async function checkPairing(): Promise<void> {
+  const checkingCode = pairingCode.value
+  if (pairingExpires.value * 1000 <= Date.now()) {
+    clearPairing()
+    return
+  }
+  try {
+    const result = await getPairingStatus()
+    if (disposed || !pairingCode.value || pairingCode.value !== checkingCode) return
+    if (!result.active || result.expires_at !== pairingExpires.value) {
+      clearPairing()
+      await load()
+    }
+  } catch { /* 网络恢复后继续检查，过期时间仍在本地检查。 */ }
+}
 
 const serverAddress = apiBase() || `${location.host}（同源）`
 const activeCount = computed(
@@ -146,13 +179,20 @@ async function load(): Promise<void> {
 
 async function handlePair(): Promise<void> {
   pairing.value = true
+  clearPairing()
   try {
+    // Validate the address before invalidating the server's previous code.
+    buildPairingQr(phoneServer.value, 'address-validation-only', Math.floor(Date.now() / 1000) + 600)
     const result = await createPairingCode()
+    const image = await QRCode.toDataURL(buildPairingQr(phoneServer.value, result.pairing_code, result.expires_at), { width: 256, margin: 4 })
+    if (disposed) return
     pairingCode.value = result.pairing_code
     pairingExpires.value = result.expires_at
-    ElMessage.success('请在新设备中输入配对码')
+    qrImage.value = image
+    pairingTimer = setInterval(() => void checkPairing(), 3000)
+    ElMessage.success('请使用安卓客户端扫码绑定')
   } catch (error) {
-    ElMessage.error(error instanceof ApiError ? errorText(error.code) : '生成配对码失败')
+    ElMessage.error(error instanceof ApiError ? errorText(error.code) : error instanceof Error ? error.message : '生成配对码失败')
   } finally {
     pairing.value = false
   }
@@ -189,4 +229,5 @@ async function onRevoke(raw: unknown): Promise<void> {
 onMounted(() => {
   void load()
 })
+onBeforeUnmount(() => { disposed = true; clearPairing() })
 </script>

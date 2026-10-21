@@ -14,6 +14,7 @@ import {
 import { createSession, deleteSession, getSession, registerDevice } from '../api/endpoints'
 import router from '../router'
 import { buildPairingRequest } from '../utils/pairing'
+import { useMessagesStore } from './messages'
 
 /** 服务端错误码 → 中文提示 */
 const ERROR_TEXT: Record<string, string> = {
@@ -66,6 +67,7 @@ export const useAuthStore = defineStore('auth', () => {
     setDeviceName(session.name)
     clearToken()
     token.value = ''
+    useMessagesStore().$reset()
     authenticated.value = true
   }
 
@@ -93,6 +95,7 @@ export const useAuthStore = defineStore('auth', () => {
       }
     }
     pendingPairToken = null
+    useMessagesStore().$reset()
     authenticated.value = false
     token.value = ''
     deviceId.value = ''

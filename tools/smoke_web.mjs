@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, mkdir } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -15,7 +15,7 @@ await mkdir(path.join(root, 'artifacts'), { recursive: true })
 const directory = await mkdtemp(path.join(root, 'artifacts/web-smoke-'))
 const bundle = path.join(directory, 'frontend.mjs')
 await build({
-  stdin: { contents: `export * from './src/api/client'; export * from './src/api/endpoints'; export * from './src/utils/pairing'`, resolveDir: path.join(root, 'web_client') },
+  stdin: { contents: `export * from './src/api/client'; export * from './src/api/endpoints'; export * from './src/utils/pairing'; export * from './src/stores/messages'; export { createPinia, setActivePinia } from 'pinia'`, resolveDir: path.join(root, 'web_client') },
   bundle: true, platform: 'node', format: 'esm', outfile: bundle,
   define: { 'import.meta.env': '{}' },
 })
@@ -61,7 +61,17 @@ try {
   assert.equal((await api.getSession()).device_id, web.device_id)
   console.log('PASS actual WebCrypto signature, cookie session and static hosting')
   const next = await api.createPairingCode()
+  const qrContract = JSON.parse(await readFile(path.join(root, 'contracts/pairing.json'), 'utf8'))
+  assert.deepEqual(JSON.parse(api.buildPairingQr(qrContract.server, qrContract.pairing_code, qrContract.expires_at)), qrContract)
+  for (const address of ['https://user:secret@relay.test', 'https://relay.test/api', 'https://relay.test?key=secret', 'file:///tmp']) {
+    assert.throws(() => api.buildPairingQr(address, next.pairing_code, next.expires_at))
+  }
+  const qr = JSON.parse(api.buildPairingQr(base, next.pairing_code, next.expires_at))
+  assert.equal(qr.server, base)
+  assert.equal(qr.type, 'privrelay-pairing')
+  assert.equal((await api.getPairingStatus()).active, true)
   const phone = await api.registerDevice(await api.buildPairingRequest({ pairingCode: next.pairing_code, deviceName: 'Synthetic Android' }))
+  assert.equal((await api.getPairingStatus()).active, false)
   assert.equal((await api.getSession()).device_id, web.device_id, 'new device must not replace browser identity')
   await assert.rejects(api.registerDevice(await api.buildPairingRequest({ pairingCode: next.pairing_code, deviceName: 'Replay' })))
   console.log('PASS browser generates a single-use code for another device')
@@ -75,7 +85,15 @@ try {
   assert.equal(page.messages[0].device_id, phone.device_id)
   assert.equal(page.messages[0].classified, false)
   const id = page.messages[0].message_id
-  assert.equal((await api.restoreMessage(id, crypto.randomUUID())).restored, true)
+  const restored = await api.restoreMessage(id, crypto.randomUUID())
+  assert.equal(restored.restored, true)
+  api.setActivePinia(api.createPinia())
+  const messages = api.useMessagesStore()
+  messages.upsert(restored)
+  messages.apply(page.messages)
+  assert.equal(messages.byId[id].restored, true, 'a stale poll must not overwrite the newer restore response')
+  messages.$reset()
+  assert.equal(messages.all.length, 0)
   assert.equal((await api.listMessages(page.cursor)).messages[0].restored, true)
   assert.equal((await api.sendFeedback(id, crypto.randomUUID(), 'personal')).status, 'pending_review')
   await api.revokeDevice(phone.device_id)

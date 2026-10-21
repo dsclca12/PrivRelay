@@ -142,9 +142,7 @@ function onResize(): void {
 }
 
 function onLogout(): void {
-  stop()
-  messages.$reset()
-  auth.logout()
+  void auth.logout()
 }
 
 onMounted(() => {

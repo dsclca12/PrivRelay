@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../app/app.dart';
+import '../core/pairing.dart';
+import 'pairing_scanner.dart';
 
 class SettingsPage extends ConsumerStatefulWidget {
   const SettingsPage({super.key});
@@ -17,6 +19,42 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   );
   final code = TextEditingController();
   bool allowHttp = false, pairing = false;
+
+  Future<void> bind({PairingQr? scanned}) async {
+    final r = ref.read(repositoryProvider);
+    if (pairing) return;
+    if (r.busy) throw StateError('正在同步，请稍后重试绑定');
+    if (scanned != null) {
+      address.text = scanned.server;
+      code.text = scanned.code;
+    }
+    final target = address.text.trim();
+    final pairingCode = code.text.trim();
+    if (!await confirm(
+      context,
+      '确认同步目的地',
+      '服务器：$target\n配对后将上传本机已接收及后续短信的正文，供服务器分类和同步。',
+    )) {
+      return;
+    }
+    if (!mounted) return;
+    if (scanned != null &&
+        scanned.expiresAt <= DateTime.now().millisecondsSinceEpoch ~/ 1000) {
+      throw const FormatException('二维码已过期，请重新生成');
+    }
+    setState(() => pairing = true);
+    try {
+      await r.pair(target, pairingCode, allowHttp: allowHttp);
+      code.clear();
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('配对成功')));
+      }
+    } finally {
+      if (mounted) setState(() => pairing = false);
+    }
+  }
+
   @override
   void dispose() {
     address.dispose();
@@ -31,6 +69,23 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       padding: const EdgeInsets.all(20),
       children: [
         Text('连接你的服务器', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.qr_code_scanner),
+          label: const Text('扫码绑定服务器'),
+          onPressed: pairing || r.busy
+              ? null
+              : () => perform(context, () async {
+                  final result = await Navigator.of(context).push<PairingQr>(
+                    MaterialPageRoute(
+                      builder: (_) => PairingScannerPage(
+                        allowHttp: kDebugMode && allowHttp,
+                      ),
+                    ),
+                  );
+                  if (result != null && mounted) await bind(scanned: result);
+                }),
+        ),
         const SizedBox(height: 12),
         TextField(
           controller: address,
@@ -63,28 +118,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         const SizedBox(height: 12),
         FilledButton(
-          onPressed: pairing || r.busy
-              ? null
-              : () => perform(context, () async {
-                  if (!await confirm(
-                    context,
-                    '确认同步目的地',
-                    '服务器：${address.text}\n配对后将上传本机已接收及后续短信的正文，供服务器分类和同步。',
-                  )) {
-                    return;
-                  }
-                  setState(() => pairing = true);
-                  try {
-                    await r.pair(address.text, code.text, allowHttp: allowHttp);
-                    code.clear();
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context)
-                          .showSnackBar(const SnackBar(content: Text('配对成功')));
-                    }
-                  } finally {
-                    if (mounted) setState(() => pairing = false);
-                  }
-                }),
+          onPressed: pairing || r.busy ? null : () => perform(context, bind),
           child: Text(pairing ? '正在配对…' : '配对并开始同步'),
         ),
         const SizedBox(height: 24),

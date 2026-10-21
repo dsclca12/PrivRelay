@@ -26,12 +26,13 @@ export const useMessagesStore = defineStore('messages', () => {
 
   function apply(messages: Message[]): void {
     for (const message of messages) {
-      byId.value[message.message_id] = message
+      upsert(message)
     }
   }
 
   function upsert(message: Message): void {
-    byId.value[message.message_id] = message
+    const previous = byId.value[message.message_id]
+    if (!previous || message.revision >= previous.revision) byId.value[message.message_id] = message
   }
 
   /**

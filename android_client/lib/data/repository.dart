@@ -66,6 +66,7 @@ class RelayRepository extends ChangeNotifier {
   Future<void>? _syncing;
   int _socketAttempt = 0;
   bool _listenEnabled = true;
+  bool _remoteMore = false;
 
   static Future<RelayRepository> open({bool listen = true}) async {
     const p = SmsPlatform();
@@ -149,21 +150,24 @@ class RelayRepository extends ChangeNotifier {
         address,
         allowHttp: kDebugMode && allowHttp,
       );
+      final pairingCode = code.trim();
+      if (pairingCode.isEmpty) throw const FormatException('请输入一次性配对码');
       if (server.isNotEmpty &&
           target != server &&
-          (await db.select(db.messages).get()).isNotEmpty) {
+          ((await db.select(db.messages).get()).isNotEmpty ||
+              (await db.select(db.operations).get()).isNotEmpty)) {
         throw StateError('切换服务器前请先处理待发送数据并清理本地记录');
       }
       final identity = await platform.identity();
       final nonce = const Uuid().v4();
       final canonical =
-          '${identity['device_id']}\n${identity['public_key']}\n$nonce\n$code';
+          '${identity['device_id']}\n${identity['public_key']}\n$nonce\n$pairingCode';
       final res = await http.post(
         '$target/api/v1/devices/register',
         data: {
           ...identity,
           'nonce': nonce,
-          'pairing_code': code,
+          'pairing_code': pairingCode,
           'signature': await platform.sign(canonical),
           'name': 'Android 手机',
         },
@@ -171,8 +175,11 @@ class RelayRepository extends ChangeNotifier {
       final newToken = (res.data as Map)['token'] as String;
       if (newToken.isEmpty) throw const FormatException('Empty token');
       await secure.write(key: 'token', value: newToken);
-      await db.setPref('server', target);
-      await db.setPref('re_pair', 'false');
+      await db.transaction(() async {
+        if (target != server) await db.setPref('cursor', '0');
+        await db.setPref('server', target);
+        await db.setPref('re_pair', 'false');
+      });
       server = target;
       token = newToken;
       rePair = false;
@@ -319,7 +326,7 @@ class RelayRepository extends ChangeNotifier {
       if (!_closed &&
           !rePair &&
           token != null &&
-          (pending + operationCount > 0 || error.isNotEmpty)) {
+          (pending + operationCount > 0 || error.isNotEmpty || _remoteMore)) {
         _retry?.cancel();
         final rows =
             await (db.select(db.messages)
@@ -336,7 +343,9 @@ class RelayRepository extends ChangeNotifier {
           if (rows.isNotEmpty) rows.first.retryAt,
           if (ops.isNotEmpty) ops.first.retryAt,
         ];
-        final seconds = times.isEmpty
+        final seconds = _remoteMore && error.isEmpty
+            ? 1
+            : times.isEmpty
             ? 60
             : max(
                 1,
@@ -378,7 +387,8 @@ class RelayRepository extends ChangeNotifier {
         cursor = data['cursor'].toString();
         await db.setPref('cursor', cursor);
       });
-      if (data['has_more'] != true) break;
+      _remoteMore = data['has_more'] == true;
+      if (!_remoteMore) break;
     }
   }
 
@@ -475,7 +485,11 @@ class RelayRepository extends ChangeNotifier {
     final old = _socket;
     _socket = null;
     old?.sink.close();
-    if (!_listenEnabled || _closed || token == null || rePair || server.isEmpty) {
+    if (!_listenEnabled ||
+        _closed ||
+        token == null ||
+        rePair ||
+        server.isEmpty) {
       return;
     }
     final uri = Uri.parse(server).replace(
@@ -533,13 +547,20 @@ class RelayRepository extends ChangeNotifier {
       rePair = true;
       await db.setPref('re_pair', 'true');
       state = '需要重新配对';
+      _retry?.cancel();
+      _wsRetry?.cancel();
+      final socket = _socket;
+      _socket = null;
+      await socket?.sink.close();
       changed();
     }
   }
 
   Future<void> unpair() async {
     if (busy) throw StateError('请等待同步完成');
-    _socket?.sink.close();
+    final socket = _socket;
+    _socket = null;
+    await socket?.sink.close();
     _retry?.cancel();
     _wsRetry?.cancel();
     await secure.delete(key: 'token');

@@ -1,0 +1,7 @@
+{
+  "type": "privrelay-pairing",
+  "version": 1,
+  "server": "https://relay.example.com",
+  "pairing_code": "synthetic-pairing-code-for-contract-only",
+  "expires_at": 2000000000
+}

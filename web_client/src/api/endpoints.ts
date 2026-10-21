@@ -73,6 +73,9 @@ export function deleteSession(): Promise<{ logged_out: boolean }> {
 export function createPairingCode(): Promise<{ pairing_code: string; expires_at: number }> {
   return apiFetch('/api/v1/pairing-codes', { method: 'POST' })
 }
+export function getPairingStatus(): Promise<{ active: boolean; expires_at: number }> {
+  return apiFetch('/api/v1/pairing-codes')
+}
 
 export interface ServerStatus {
   messages: number

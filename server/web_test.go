@@ -168,6 +168,13 @@ func TestWebPairingCodeWorksWithAndroidSignatureAndSingleUse(t *testing.T) {
 	if w.Code != 201 || code.Code == "" || code.Code == old || code.Expires <= time.Now().Unix() {
 		t.Fatal("code", w.Body)
 	}
+	if w := call(t, s, "GET", "/api/v1/pairing-codes", "", nil); w.Code != 401 {
+		t.Fatal("pairing status exposed without authentication")
+	}
+	status := call(t, s, "GET", "/api/v1/pairing-codes", token, nil)
+	if status.Code != 200 || !strings.Contains(status.Body.String(), `"active":true`) || strings.Contains(status.Body.String(), code.Code) {
+		t.Fatal("pairing status invalid or exposes secret", status.Body)
+	}
 	if w := call(t, s, "POST", "/api/v1/devices/register", "", signedRegistration(t, "old-code-device-01", old)); w.Code != 403 {
 		t.Fatal("old code accepted")
 	}
@@ -179,6 +186,10 @@ func TestWebPairingCodeWorksWithAndroidSignatureAndSingleUse(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &registered)
 	if w.Code != 201 || registered.Token == "" {
 		t.Fatal(w.Code, w.Body)
+	}
+	status = call(t, s, "GET", "/api/v1/pairing-codes", token, nil)
+	if !strings.Contains(status.Body.String(), `"active":false`) {
+		t.Fatal("consumed code remains active", status.Body)
 	}
 	if w := call(t, s, "POST", "/api/v1/devices/register", "", req); w.Code != 403 {
 		t.Fatal("replayed code accepted")

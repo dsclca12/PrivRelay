@@ -25,7 +25,7 @@
 ./tools/start.ps1
 ```
 
-脚本安装缺失的 Web 依赖、构建前后端，然后由 Go 在同一个地址提供网页和 API。打开 `http://127.0.0.1:8787`，用终端显示的一次性码登录。设备中心可生成新码供手机配对，无需重启服务。默认沿用 `server/data/privrelay.enc`；按 Ctrl+C 停止。
+脚本安装缺失的 Web 依赖、构建前后端，然后由 Go 在同一个地址提供网页和 API。打开 `http://127.0.0.1:8787`，用终端显示的一次性码登录。在设备中心填写手机可访问的 HTTPS 地址并生成二维码，安卓设置中点「扫码绑定服务器」，确认后同步；也支持手动输入配对码，无需重启服务。默认沿用 `server/data/privrelay.enc`；按 Ctrl+C 停止。
 
 接入分类器：`./tools/start.ps1 -Classifier http://127.0.0.1:18788`。不配置时消息照常保存、显示为待分类。Docker 执行 `docker compose up --build -d` 也会构建并托管网页。
 

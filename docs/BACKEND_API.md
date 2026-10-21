@@ -34,6 +34,7 @@
 | GET | `/healthz` | `{status:"ok", classifier:"ok"或"unavailable"}`；上游异常不代表存储异常 |
 | POST | `/api/v1/devices/register` | 一次性配对，返回 `{token, device_id}`，201 |
 | POST | `/api/v1/pairing-codes` | 新增一次性码，返回 `{pairing_code, expires_at}`，201 |
+| GET | `/api/v1/pairing-codes` | 查询当前码是否仍有效，返回 `{active, expires_at}`，不返回配对码 |
 | POST | `/api/v1/session` | 仅接受 Bearer + 同源 Origin，换取浏览器 Cookie |
 | GET | `/api/v1/session` | 返回 `{device_id, name}` |
 | DELETE | `/api/v1/session` | 清除 Cookie，返回 `{logged_out:true}`；撤销设备需另用 DELETE devices |
@@ -51,6 +52,18 @@
 | GET | `/api/v1/ws` | 升级 WebSocket，仅推送 `{"event":"changed"}` |
 
 所有 epoch 时间：Message 的 `received_at` 是**毫秒**，设备 `expires_at`、配对码 `expires_at` 和 `server_time` 是**秒**。令牌有效期 90 天；撤销或到期后返回 401，本地历史不清除。
+
+### Android 扫码绑定
+
+Web 设备中心允许填写手机可访问的服务器根地址，然后生成二维码。二维码在浏览器本地生成，无第三方二维码服务；内容与 [共享样本](../contracts/pairing.json) 一致：
+
+```json
+{"type":"privrelay-pairing","version":1,"server":"https://relay.example.com","pairing_code":"一次性配对码","expires_at":2000000000}
+```
+
+Android 设置中的「扫码绑定服务器」读取二维码，检查版本、字段、有效期及服务器地址，在用户确认同步目的地后调用原有签名注册接口。二维码不是长期令牌；配对码仍由后端执行 10 分钟有效、单次使用、重新生成使旧码失效的限制。Web 定期查询配对状态，消费或过期后移除二维码并刷新设备列表。二维码包含临时授权凭据，请勿分享或记录到日志。
+
+正式 Android 仅接受 HTTPS；地址不能包含账号、路径、查询参数或 fragment。dev Debug 的 HTTP 测试需主动勾选允许 HTTP，且网络配置仅允许 `127.0.0.1`、`localhost` 和模拟器 `10.0.2.2`；使用 ADB 回环时先执行 `adb reverse tcp:8787 tcp:8787`。网页默认地址来自浏览器当前源，开发时需确认端口是后端端口（默认 8787），而非 Vite 的 5173。手机通过局域网连接电脑时填写可访问的 HTTPS 地址。
 
 ### 注册与上传
 

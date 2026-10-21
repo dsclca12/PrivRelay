@@ -158,6 +158,8 @@ func (s *Server) handler() http.Handler {
 			s.codeExpires = time.Now().Add(10 * time.Minute)
 			s.failures = map[string]int{}
 			writeJSON(w, 201, map[string]any{"pairing_code": s.code, "expires_at": s.codeExpires.Unix()})
+		case path == "/api/v1/pairing-codes" && r.Method == "GET":
+			writeJSON(w, 200, map[string]any{"active": s.code != "" && time.Now().Before(s.codeExpires), "expires_at": s.codeExpires.Unix()})
 		case path == "/api/v1/messages/sync" && r.Method == "POST":
 			s.syncMessages(w, r, d)
 		case path == "/api/v1/messages" && r.Method == "GET":

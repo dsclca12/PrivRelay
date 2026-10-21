@@ -269,7 +269,13 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
     return { device_id: 'demo-pixel8-7f21c4a9', name: '演示浏览器' } as T
   }
   if (url.pathname === '/api/v1/pairing-codes' && method === 'POST') {
-    return { pairing_code: 'demo-pairing-code', expires_at: Math.floor(Date.now() / 1000) + 600 } as T
+    const expires = Math.floor(Date.now() / 1000) + 600
+    localStorage.setItem('privrelay.demo-pairing-expires', String(expires))
+    return { pairing_code: 'demo-pairing-code', expires_at: expires } as T
+  }
+  if (url.pathname === '/api/v1/pairing-codes' && method === 'GET') {
+    const expires = Number(localStorage.getItem('privrelay.demo-pairing-expires') ?? 0)
+    return { active: expires * 1000 > Date.now(), expires_at: expires } as T
   }
   if (url.pathname === '/api/v1/status') {
     return { messages: s.messages.length, quarantined: s.messages.filter(m => m.action === 'quarantine').length, pending_classification: 0, authorized_devices: s.devices.filter(d => d.active).length, connected_devices: 0, pending_feedback: 0, revision: s.revision } as T

@@ -19,7 +19,20 @@ export interface PairingInput {
   deviceName: string
 }
 
+export function buildPairingQr(server: string, code: string, expiresAt: number): string {
+  const url = new URL(server.trim())
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password ||
+      url.search || url.hash || url.pathname !== '/') {
+    throw new Error('请输入完整的 HTTPS 服务器地址，不含路径、账号或参数')
+  }
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(code) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() / 1000) {
+    throw new Error('配对码无效或已过期，请重新生成')
+  }
+  return JSON.stringify({ type: 'privrelay-pairing', version: 1, server: url.origin, pairing_code: code, expires_at: expiresAt })
+}
+
 export async function buildPairingRequest(input: PairingInput): Promise<RegisterRequest> {
+  if (!crypto.subtle) throw new Error('请通过 HTTPS 或 localhost 打开控制台后配对')
   const code = input.pairingCode.trim()
   const deviceId = uuid()
   const nonce = toBase64(crypto.getRandomValues(new Uint8Array(32)))
