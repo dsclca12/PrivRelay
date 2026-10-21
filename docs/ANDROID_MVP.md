@@ -70,6 +70,22 @@ flutter test integration_test/mvp_test.dart --flavor dev -d <设备序列号> --
 
 `devDebug` 额外提供受系统 DUMP 权限保护的 shell 合成短信 Receiver，用于测试普通后台进程回收后的 WorkManager 消费；所有 Release 和 prod 构建均不包含它。MethodChannel 的合成注入也仅对 dev Debug 开启。
 
+壳层调试接口（仅 dev Debug，包名 `dev.privrelay.privrelay.dev`）：
+
+```powershell
+# 注入一条可指定发件人、正文、时间戳、订阅与槽位的合成短信
+adb shell am broadcast -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver --receiver-ordered `
+  --es sender "+8613800000000" --es body "【测试】验证码 123456" --el timestamp 0 --ei subscription_id 1 --ei slot 0
+
+# 用默认后台恢复样本注入（省略任意参数即使用默认值）
+adb shell am broadcast -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver --receiver-ordered
+
+# 查询原生暂存队列长度，输出形如 data="spool_count=1"
+adb shell am broadcast -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver --receiver-ordered --ez status true
+```
+
+`--el timestamp 0` 表示由设备当前时间补齐；相同发件人、正文、时间戳和订阅的消息会按指纹去重，重复广播返回同一 `message_id`。注入后立即触发一次同步任务；Receiver 仅在 `BuildConfig.DEBUG` 且 flavor 为 `dev` 时生效。
+
 ## 使用边界
 
 - 本版不是默认短信应用，不能抑制系统短信应用的通知，不能向运营商拦截短信，也不提供短信发送。
