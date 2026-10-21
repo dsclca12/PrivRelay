@@ -31,6 +31,18 @@ String validateServer(String input, {bool allowHttp = false}) {
   return uri.replace(path: '').toString().replaceFirst(RegExp(r'/$'), '');
 }
 
+bool shouldNotify(String mode, String category, String action) =>
+    action == 'allow' &&
+    mode != 'off' &&
+    (mode != 'important' ||
+        [
+          'otp',
+          'transaction',
+          'personal',
+          'suspicious',
+          'uncertain',
+        ].contains(category));
+
 class RelayRepository extends ChangeNotifier {
   final AppDatabase db;
   final SmsPlatform platform;
@@ -53,6 +65,9 @@ class RelayRepository extends ChangeNotifier {
            );
   String server = '', deviceId = '', state = '本地模式', error = '';
   String? token;
+  bool hidePreviews = false, screenProtection = true;
+  String notificationMode = 'all';
+  int retentionDays = 0;
   bool onboarded = false,
       busy = false,
       rePair = false,
@@ -105,6 +120,10 @@ class RelayRepository extends ChangeNotifier {
     onboarded = await db.pref('onboarded') == 'true';
     rePair = await db.pref('re_pair') == 'true';
     backgroundEnabled = await db.pref('background') != 'false';
+    hidePreviews = await db.pref('hide_previews') == 'true';
+    screenProtection = await db.pref('screen_protection') != 'false';
+    notificationMode = await db.pref('notification_mode') ?? 'all';
+    retentionDays = int.tryParse(await db.pref('retention_days') ?? '') ?? 0;
     permissions = await platform.status();
     state = rePair
         ? '需要重新配对'
@@ -216,6 +235,10 @@ class RelayRepository extends ChangeNotifier {
         _retry = Timer(const Duration(seconds: 2), sync);
         return;
       }
+      // Refresh preferences for headless workers and other engine instances.
+      notificationMode = await db.pref('notification_mode') ?? 'all';
+      retentionDays = int.tryParse(await db.pref('retention_days') ?? '') ?? 0;
+      await applyRetention();
       await db.recoverUploads();
       // Never ACK the native spool until the complete local transaction commits.
       while (true) {
@@ -225,7 +248,7 @@ class RelayRepository extends ChangeNotifier {
         await platform.ack(raw.map((e) => e['message_id'] as String).toList());
         if (token == null) {
           for (final item in raw) {
-            await platform.notify(item['message_id'] as String);
+            await notifyMessage(SmsMessage.fromJson(item));
           }
         }
       }
@@ -265,7 +288,7 @@ class RelayRepository extends ChangeNotifier {
             if (ids.contains(m.id)) {
               await db.saveRemote(m);
               acked.add(m.id);
-              if (m.action == 'allow') await platform.notify(m.id);
+              if (m.action == 'allow') await notifyMessage(m);
             }
           }
           for (final row in batch.where((e) => !acked.contains(e.id))) {
@@ -292,13 +315,14 @@ class RelayRepository extends ChangeNotifier {
             } else {
               await fail(row);
             }
-            await platform.notify(row.id);
+            await notifyMessage(db.decode(row));
           }
           rethrow;
         }
       }
       await flushOperations(now);
       await pull();
+      await applyRetention();
       state = '同步完成';
       error = '';
     } on DioException catch (e) {
@@ -539,6 +563,21 @@ class RelayRepository extends ChangeNotifier {
     changed();
   }
 
+  Future<Map<String, dynamic>> aiSettings() async => Map<String, dynamic>.from(
+    (await http.get('$server/api/v1/ai/settings', options: auth)).data,
+  );
+  Future<Map<String, dynamic>> saveAI(Map<String, dynamic> value) async =>
+      Map<String, dynamic>.from(
+        (await http.put(
+          '$server/api/v1/ai/settings',
+          options: auth,
+          data: value,
+        )).data,
+      );
+  Future<Map<String, dynamic>> testAI() async => Map<String, dynamic>.from(
+    (await http.post('$server/api/v1/ai/test', options: auth, data: {})).data,
+  );
+
   Future<List<dynamic>> devices() async =>
       (await http.get('$server/api/v1/devices', options: auth)).data as List;
   Future<void> revoke(String id) async {
@@ -578,14 +617,53 @@ class RelayRepository extends ChangeNotifier {
     changed();
   }
 
+  Future<void> notifyMessage(SmsMessage message) async {
+    if (shouldNotify(notificationMode, message.category, message.action)) {
+      await platform.notify(message.id);
+    }
+  }
+
+  Future<void> setPrivacy({bool? previews, bool? protection}) async {
+    if (protection != null) {
+      await platform.protectScreen(protection);
+      await db.setPref('screen_protection', '$protection');
+      screenProtection = protection;
+    }
+    if (previews != null) {
+      await db.setPref('hide_previews', '$previews');
+      hidePreviews = previews;
+    }
+    changed();
+  }
+
+  Future<void> setNotificationMode(String mode) async {
+    if (!['all', 'important', 'off'].contains(mode)) {
+      throw ArgumentError.value(mode);
+    }
+    await db.setPref('notification_mode', mode);
+    notificationMode = mode;
+    changed();
+  }
+
+  Future<void> setRetention(int days) async {
+    if (![0, 30, 90, 365].contains(days)) throw ArgumentError.value(days);
+    await db.setPref('retention_days', '$days');
+    retentionDays = days;
+    await applyRetention();
+    changed();
+  }
+
+  Future<void> applyRetention() async {
+    if (retentionDays <= 0) return;
+    await db.clearUploaded(
+      before: DateTime.now()
+          .subtract(Duration(days: retentionDays))
+          .millisecondsSinceEpoch,
+    );
+  }
+
   Future<void> clearUploaded() async {
-    final ops = await db.select(db.operations).get();
-    await (db.delete(db.messages)..where(
-          (t) =>
-              t.state.equals('acked') &
-              t.id.isNotIn(ops.map((o) => o.messageId)),
-        ))
-        .go();
+    await db.clearUploaded();
     changed();
   }
 

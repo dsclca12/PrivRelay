@@ -1,6 +1,6 @@
 # PrivRelay
 
-隐私优先、自托管的跨设备短信管理系统。Android 客户端接收新短信并加密保存在本机，通过 Go 服务同步，接入 [PrivateSMS-Classifier](https://github.com/dsclca12/PrivateSMS-Classifier) 进行分类，支持规则隔离、恢复和人工纠错。
+隐私优先、自托管的跨设备短信管理系统。Android 客户端接收新短信并加密保存在本机，通过 Go 服务同步，接入 [PrivateSMS-Classifier](https://github.com/dsclca12/PrivateSMS-Classifier) 进行分类，支持可选 OpenAI 兼容 LLM 自动分类、规则隔离、恢复和人工纠错。
 
 当前处于 **Android MVP 与后端联调阶段**，Web 控制台初版已交付，尚未完成生产稳定性和完整系统验收。
 
@@ -10,10 +10,10 @@
 |---|---|---|
 | Android | Flutter / Kotlin、新短信接收、加密存储、离线队列、收件箱、隔离与恢复 | 非默认短信应用；不导入系统历史、不发送短信，不能抑制系统短信应用通知 |
 | Go 服务 | 签名配对、消息同步与查询、规则、纠错、设备撤销、浏览器会话、WebSocket | 单用户、单进程、加密文件快照；尚无 PostgreSQL、多租户、多实例支持 |
-| 分类器 | 集成 PrivateSMS-Classifier 原版源码及公开 INT8 模型；分类、风险与模型隔离均采用其 API | 公开预览模型要求人工复核，不会仅凭分数自动隔离；人工名单与恢复由 PrivRelay 管理 |
+| AI 分类 | 原版 PrivateSMS-Classifier／INT8 模型；可配置 OpenAI 兼容 LLM 直接分类或复核；独立授权的自动隔离 | LLM 地址、模型、密钥默认空且关闭；分数未经校准；重要消息保护，失败正常保留，隔离可恢复 |
 | Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、纠错审核、运行监控；管理台 API 与静态目录托管 | 浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
 
-服务器及分类服务能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
+服务器、分类服务和主动配置的 LLM 接口能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
 
 ## 快速开始
 
@@ -75,11 +75,19 @@ npm run dev
 
 浏览器打开终端提示的地址（默认 `http://localhost:5173`），用后端启动时显示的配对码配对，或粘贴访问令牌。开发服务器会把 `/api` 与 `/healthz` 代理到 `http://127.0.0.1:8787`，可用 `PRIVRELAY_API` 指向其他后端；设置 `VITE_MOCK=1` 可在没有后端时浏览演示数据。构建、同源部署和已知限制见 [Web 控制台说明](web_client/README.md)。
 
+## AI / LLM 自动分类与拦截
+
+在 Web 规则页或 Android「设置 → AI / LLM 自动分类」填写自己的兼容 API 地址、模型与密钥，选择直接分类或由轻量模型先处理、LLM 复核。所有连接配置默认留空，LLM 默认关闭。自动隔离需单独授权，并开启过滤／拦截模式；验证码、交易、安全内容、白名单与人工恢复优先保护。配置、测试及失败补偿见 [AI 分类说明](docs/AI_CLASSIFICATION.md)。
+
+Android 同时提供列表正文隐藏、默认防截屏、分类提醒和可选的本地自动保留期限。自动清理默认关闭，不清理未上传、隔离或有待处理操作的记录。
+
 ## 文档导航
 
 | 需求 | 文档 |
 |---|---|
 | 浏览全部文档、区分操作说明与历史证据 | [文档索引](docs/README.md) |
+| 配置 AI / LLM 自动分类与隔离 | [AI 分类说明](docs/AI_CLASSIFICATION.md) |
+| 持续集成和生成 APK / AAB | [验证与发布](docs/RELEASE.md) |
 | 使用、构建和理解 Android 边界 | [Android MVP](docs/ANDROID_MVP.md) |
 | 启动、构建和部署 Web 控制台 | [Web 控制台说明](web_client/README.md) |
 | 部署、配置分类器和备份 | [部署指南](docs/DEPLOYMENT.md) |

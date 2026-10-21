@@ -5,6 +5,7 @@
 import type { Device, Message, Rules } from './types'
 import type { Feedback } from './endpoints'
 
+let demoAI = { mode: 'disabled', base_url: '', model: '', has_api_key: false, allow_http: false, auto_quarantine: false, threshold: 0.95 }
 interface MockState {
   feedback: Feedback[]
   messages: Message[]
@@ -258,6 +259,18 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
   const s = ensureState()
   const url = new URL(path, 'http://mock.local')
 
+  if (url.pathname === '/api/v1/ai/settings') {
+    if (method === 'PUT') {
+      const input = body as typeof demoAI & { api_key?: string; clear_api_key?: boolean }
+      demoAI = { mode: input.mode, base_url: input.base_url, model: input.model,
+        has_api_key: input.clear_api_key ? false : Boolean(input.api_key) || (input.base_url === demoAI.base_url && demoAI.has_api_key),
+        allow_http: input.allow_http, auto_quarantine: input.auto_quarantine, threshold: input.threshold }
+    }
+    return clone(demoAI) as T
+  }
+  if (url.pathname === '/api/v1/ai/test') {
+    return { category: 'marketing', model_version: 'demo-only', synthetic: true } as T
+  }
   if (url.pathname === '/api/v1/session') {
     if (method === 'POST') {
       localStorage.setItem('privrelay.demo-session', '1')

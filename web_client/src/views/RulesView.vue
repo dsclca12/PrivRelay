@@ -10,6 +10,8 @@
       </el-button>
     </div>
 
+    <LLMSettingsCard />
+
     <el-card shadow="never" style="margin-bottom: 14px">
       <template #header>
         <span style="font-weight: 600">过滤模式</span>
@@ -88,6 +90,7 @@
 </template>
 
 <script setup lang="ts">
+import LLMSettingsCard from '../components/LLMSettingsCard.vue'
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
 import { ApiError } from '../api/client'

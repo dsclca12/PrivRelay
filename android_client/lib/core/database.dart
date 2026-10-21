@@ -112,11 +112,23 @@ class AppDatabase extends _$AppDatabase {
     }
     // JSON extraction searches literal text, never raw SQL or LIKE wildcards.
     if (search.isNotEmpty) {
-      Expression<bool> containsField(Expression<String> payload,String field) => FunctionCallExpression<int>('instr', [
-        FunctionCallExpression<String>('lower', [FunctionCallExpression<String>('json_extract',[payload,Variable('\$.$field')])]),
+      Expression<bool> containsField(
+        Expression<String> payload,
+        String field,
+      ) => FunctionCallExpression<int>('instr', [
+        FunctionCallExpression<String>('lower', [
+          FunctionCallExpression<String>('json_extract', [
+            payload,
+            Variable('\$.$field'),
+          ]),
+        ]),
         Variable(search.toLowerCase()),
       ]).isBiggerThanValue(0);
-      q.where((t)=>containsField(t.payload,'body') | containsField(t.payload,'sender'));
+      q.where(
+        (t) =>
+            containsField(t.payload, 'body') |
+            containsField(t.payload, 'sender'),
+      );
     }
     q
       ..orderBy([
@@ -166,6 +178,16 @@ class AppDatabase extends _$AppDatabase {
       ..where(messages.state.isIn(states));
     return (await query.getSingle()).read(count) ?? 0;
   }
+
+  // Keep queued operations and recoverable quarantine records, even when old.
+  Future<int> clearUploaded({int? before}) => customUpdate(
+    "DELETE FROM messages WHERE state = 'acked' "
+    "AND id NOT IN (SELECT message_id FROM operations) "
+    "AND (? IS NULL OR (received < ? AND action = 'allow'))",
+    variables: [Variable<int>(before), Variable<int>(before)],
+    updates: {messages},
+    updateKind: UpdateKind.delete,
+  );
 
   Future<int> pendingCount() => countState(['pending', 'uploading', 'failed']);
   Future<void> recoverUploads() =>

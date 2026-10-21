@@ -24,5 +24,7 @@ class SmsPlatform {
       Map<String, dynamic>.from((await channel.invokeMapMethod('identity'))!);
   Future<String> sign(String value) async =>
       (await channel.invokeMethod<String>('sign', value))!;
+  Future<void> protectScreen(bool enabled) =>
+      channel.invokeMethod('protectScreen', enabled);
   Future<void> notify(String id) => channel.invokeMethod('notify', id);
 }

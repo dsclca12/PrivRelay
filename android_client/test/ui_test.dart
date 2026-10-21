@@ -77,6 +77,34 @@ void main() {
       await db.close();
     },
   );
+  testWidgets('hidden list previews retain readable details', (tester) async {
+    final db = AppDatabase(NativeDatabase.memory());
+    final r = LocalRepository(db);
+    await db.ingest([
+      const SmsMessage(
+        id: 'hidden',
+        sender: '测试发件人',
+        body: '仅详情可见的合成正文',
+        receivedAt: 100,
+      ),
+    ]);
+    await r.setPrivacy(previews: true);
+    expect(await db.pref('hide_previews'), 'true');
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [repositoryProvider.overrideWithValue(r)],
+        child: const RelayApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('仅详情可见的合成正文'), findsNothing);
+    expect(find.text('短信内容已隐藏，点击查看'), findsOneWidget);
+    await tester.tap(find.text('测试发件人'));
+    await tester.pumpAndSettle();
+    expect(find.text('仅详情可见的合成正文'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    await db.close();
+  });
   testWidgets('welcome supports declined permissions and large text', (
     tester,
   ) async {

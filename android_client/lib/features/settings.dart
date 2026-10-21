@@ -137,12 +137,73 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           subtitle: const Text('新短信通知只显示通用提示，锁屏不显示正文'),
           onTap: () => perform(context, r.requestNotifications),
         ),
+        DropdownButtonFormField<String>(
+          initialValue: r.notificationMode,
+          decoration: const InputDecoration(labelText: '新短信提醒'),
+          items: const [
+            DropdownMenuItem(value: 'all', child: Text('所有正常保留的短信')),
+            DropdownMenuItem(value: 'important', child: Text('重要与风险消息（含待确定）')),
+            DropdownMenuItem(value: 'off', child: Text('关闭本应用提醒')),
+          ],
+          onChanged: (v) {
+            if (v != null) perform(context, () => r.setNotificationMode(v));
+          },
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: r.hidePreviews,
+          title: const Text('隐藏列表正文'),
+          subtitle: const Text('收件箱与拦截箱只显示发件人，进入详情后查看正文'),
+          onChanged: (v) => perform(context, () => r.setPrivacy(previews: v)),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: r.screenProtection,
+          title: const Text('防止截屏与录屏'),
+          subtitle: const Text('保护应用全部页面，并隐藏最近任务中的画面'),
+          onChanged: (v) => perform(context, () => r.setPrivacy(protection: v)),
+        ),
+        const SizedBox(height: 12),
+        const Text('本地自动保留期限'),
+        DropdownButton<int>(
+          isExpanded: true,
+          value: r.retentionDays,
+          items: const [
+            DropdownMenuItem(value: 0, child: Text('永久保留（默认）')),
+            DropdownMenuItem(value: 30, child: Text('30 天')),
+            DropdownMenuItem(value: 90, child: Text('90 天')),
+            DropdownMenuItem(value: 365, child: Text('365 天')),
+          ],
+          onChanged: (v) => perform(context, () async {
+            if (v == null) return;
+            if (v != 0 &&
+                !await confirm(
+                  context,
+                  '启用本地自动清理？',
+                  '立即及每次同步时，清理期限外已上传的正常消息。隔离消息、未上传记录与待处理操作保留；服务器记录不删除。',
+                )) {
+              return;
+            }
+            await r.setRetention(v);
+          }),
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Text('清理仅影响本机缓存；服务器仍保留历史。重新配对或远程更新时可能再次拉取。'),
+        ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           value: r.backgroundEnabled,
           onChanged: (v) => perform(context, () => r.setBackground(v)),
           title: const Text('后台补发'),
           subtitle: const Text('使用系统任务调度；省电限制下可能延迟。关闭后仍会保存新短信。'),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.auto_awesome),
+          title: const Text('AI / LLM 自动分类'),
+          subtitle: const Text('配置 OpenAI 兼容 API、复核与自动隔离'),
+          onTap: () => context.push('/ai'),
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,

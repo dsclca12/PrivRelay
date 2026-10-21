@@ -149,3 +149,9 @@ flutter test integration_test/mvp_test.dart --flavor dev -d <序列号> --dart-d
 ```
 
 该集成测试需要可用的真实分类器、使用合成短信，并会撤销测试设备。测试运行器会覆盖 dev 调试应用，不应在用户正式应用上随意执行。生产安卓仍要求 HTTPS；不要通过放宽 Release 明文网络限制完成联调。
+
+## AI / LLM 配置
+
+已授权客户端通过 `GET /api/v1/ai/settings` 查询配置，通过 `PUT /api/v1/ai/settings` 保存，通过 `POST /api/v1/ai/test` 发送固定合成样本。字段、空白默认值、密钥保留与清除、HTTP 显式授权、分类输出及失败补偿见 [AI 分类说明](AI_CLASSIFICATION.md#接口与密钥)。
+
+消息新增可选字段 `classification_source`（`privatesms`／`llm`）、`llm_pending`、`primary_classification`（LLM 复核前的轻量模型分类结果）。旧客户端可忽略。`GET /api/v1/status` 增加 `llm_mode`、`pending_llm_review`。LLM 使用独立阈值，不改变原版分类器决策语义。

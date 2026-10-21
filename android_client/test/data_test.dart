@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:drift/drift.dart' hide isNull;
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:privrelay/core/database.dart';
@@ -60,9 +60,13 @@ void main() {
     expect((await db.page(offset: 100)).length, 20);
     expect((await db.page(search: '%_')).length, 1);
     expect((await db.page(search: "' OR 1=1 --")).length, 0);
-    await db.ingest([msg('quote',body:'hello "double" quote')]);
-    expect((await db.page(search:'"double"')).length,1);
-    expect((await db.page(search:'uncertain')).length,0,reason:'Search excludes model and policy metadata');
+    await db.ingest([msg('quote', body: 'hello "double" quote')]);
+    expect((await db.page(search: '"double"')).length, 1);
+    expect(
+      (await db.page(search: 'uncertain')).length,
+      0,
+      reason: 'Search excludes model and policy metadata',
+    );
   });
   test('pending restore cannot be overwritten by a stale pull', () async {
     final data = msg('m1').toJson()
@@ -90,6 +94,75 @@ void main() {
         .write(const MessagesCompanion(state: Value('uploading')));
     await db.recoverUploads();
     expect((await db.find('m1'))!.syncState, 'pending');
+  });
+  test(
+    'retention preserves pending, rejected, quarantined and queued operations',
+    () async {
+      await db.ingest([msg('pending'), msg('rejected')]);
+      await (db.update(db.messages)..where((t) => t.id.equals('rejected')))
+          .write(const MessagesCompanion(state: Value('rejected')));
+      for (final id in [
+        'old',
+        'boundary',
+        'recent',
+        'quarantine',
+        'feedback',
+        'restore',
+      ]) {
+        final data = msg(
+          id,
+          time: id == 'recent'
+              ? 300
+              : id == 'boundary'
+              ? 200
+              : 100,
+        ).toJson();
+        if (id == 'quarantine') data['action'] = 'quarantine';
+        await db.saveRemote(SmsMessage.fromJson(data));
+      }
+      for (final kind in ['feedback', 'restore']) {
+        await db
+            .into(db.operations)
+            .insert(
+              OperationsCompanion.insert(
+                id: 'op-$kind',
+                messageId: kind,
+                kind: kind,
+                payload: '{}',
+              ),
+            );
+      }
+      expect(await db.clearUploaded(before: 200), 1);
+      expect(await db.find('old'), isNull);
+      for (final id in [
+        'pending',
+        'rejected',
+        'boundary',
+        'recent',
+        'quarantine',
+        'feedback',
+        'restore',
+      ]) {
+        expect(await db.find(id), isNotNull, reason: id);
+      }
+      expect(await db.clearUploaded(before: 200), 0);
+      expect(await db.clearUploaded(), 3);
+      expect((await db.select(db.operations).get()).length, 2);
+      expect(await db.pendingCount(), 1);
+    },
+  );
+  test('notification preferences keep unknown results visible and quarantine silent', () {
+    for (final category in categories.keys) {
+      expect(shouldNotify('all', category, 'allow'), isTrue);
+      expect(shouldNotify('off', category, 'allow'), isFalse);
+      expect(shouldNotify('all', category, 'quarantine'), isFalse);
+    }
+    expect(shouldNotify('important', 'uncertain', 'allow'), isTrue);
+    expect(shouldNotify('important', 'otp', 'allow'), isTrue);
+    expect(shouldNotify('important', 'suspicious', 'allow'), isTrue);
+    expect(shouldNotify('important', 'transaction', 'allow'), isTrue);
+    expect(shouldNotify('important', 'marketing', 'allow'), isFalse);
+    expect(shouldNotify('important', 'service', 'allow'), isFalse);
   });
   test('retry has capped exponential backoff and jitter', () {
     expect(retryDelay(0, 0), 4);

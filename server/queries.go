@@ -88,6 +88,12 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	pendingLLM := 0
+	for _, m := range s.store.Messages {
+		if m.LLMPending {
+			pendingLLM++
+		}
+	}
 	pendingFeedback := 0
 	for _, f := range s.store.Feedback {
 		if f.Status == "pending_review" {
@@ -97,5 +103,5 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"messages": len(s.store.Messages), "quarantined": quarantined, "restored": restored, "quarantine_reasons": reasons,
 		"pending_classification": pending, "categories": counts, "authorized_devices": active,
 		"connected_devices": online, "pending_feedback": pendingFeedback, "revision": s.store.Revision,
-		"classifier_configured": s.classifier != "", "server_time": now})
+		"llm_mode": defaultString(s.store.LLM.Mode, "disabled"), "pending_llm_review": pendingLLM, "classifier_configured": s.classifier != "", "server_time": now})
 }

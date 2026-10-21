@@ -8,6 +8,8 @@
 
 | 文档 | 内容 |
 |---|---|
+| [AI / LLM 分类](AI_CLASSIFICATION.md) | 默认空配置、模型复核、自动隔离、密钥与失败补偿 |
+| [验证与发布](RELEASE.md) | CI、容器验证入口、APK / AAB、符号和检查清单 |
 | [Android MVP](ANDROID_MVP.md) | 使用、实现闭环、构建、签名与平台限制 |
 | [原版分类器集成](CLASSIFIER_INTEGRATION.md) | 普通源码快照、真实评分接口、启动及阈值语义 |
 | [部署指南](DEPLOYMENT.md) | Go / Docker 启动、配置、分类器、HTTPS、备份与排障 |

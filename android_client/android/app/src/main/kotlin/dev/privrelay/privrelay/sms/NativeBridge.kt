@@ -45,6 +45,14 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
                     "initialize" -> {SyncWorker.periodic(context);result.success(null)}
                     "schedule" -> {SyncWorker.enqueue(context,(call.arguments as? Number)?.toLong() ?: 30,true);result.success(null)}
                     "background" -> {context.getSharedPreferences("runtime",0).edit().putBoolean("background",call.arguments as Boolean).apply(); if(call.arguments==true) {SyncWorker.periodic(context);SyncWorker.enqueue(context)} else SyncWorker.cancel(context);result.success(null)}
+                    "protectScreen" -> {
+                        val enabled=call.arguments as Boolean
+                        val owner=activity ?: throw IllegalStateException("Foreground activity required")
+                        if(enabled) owner.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                        else owner.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                        context.getSharedPreferences("runtime",0).edit().putBoolean("screen_protection",enabled).commit()
+                        result.success(null)
+                    }
                     "notify" -> {notifyGeneric(call.arguments as String);result.success(null)}
                     "testInject" -> {
                         if(!dev.privrelay.privrelay.BuildConfig.DEBUG || dev.privrelay.privrelay.BuildConfig.FLAVOR!="dev") {result.notImplemented()}

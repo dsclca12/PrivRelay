@@ -18,6 +18,7 @@ class FakeSpool extends SmsPlatform {
     ).toJson(),
   ];
   int confirmations = 0;
+  final notifications = <String>[];
   @override
   Future<bool> lock() async => true;
   @override
@@ -35,7 +36,9 @@ class FakeSpool extends SmsPlatform {
   }
 
   @override
-  Future<void> notify(String id) async {}
+  Future<void> notify(String id) async {
+    notifications.add(id);
+  }
 }
 
 class FailingDatabase extends AppDatabase {
@@ -47,6 +50,31 @@ class FailingDatabase extends AppDatabase {
 }
 
 void main() {
+  test(
+    'headless sync reads latest notification preference without losing SMS',
+    () async {
+      final db = AppDatabase(NativeDatabase.memory());
+      final platform = FakeSpool();
+      final r = RelayRepository(db, platform: platform);
+      await db.setPref('notification_mode', 'off');
+      await r.sync();
+      expect(platform.notifications, isEmpty);
+      expect(await db.find('spool-id'), isNotNull);
+      expect(platform.confirmations, 1);
+      platform.raw.add(
+        const SmsMessage(
+          id: 'second',
+          sender: 'TEST',
+          body: 'synthetic',
+          receivedAt: 200,
+        ).toJson(),
+      );
+      await db.setPref('notification_mode', 'important');
+      await r.sync();
+      expect(platform.notifications, ['second']);
+      await r.close();
+    },
+  );
   test('concurrent sync callers await the same committed work', () async {
     final db = AppDatabase(NativeDatabase.memory());
     final p = FakeSpool()..gate = Completer<void>();

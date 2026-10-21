@@ -198,7 +198,7 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                               ),
                               const SizedBox(height: 10),
                               Text(
-                                m.body,
+                                r.hidePreviews ? '短信内容已隐藏，点击查看' : m.body,
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                               ),

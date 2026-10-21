@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
+import { createServer as createHTTPServer } from 'node:http'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -26,6 +27,7 @@ await new Promise(resolve => reservation.close(resolve))
 const base = `http://127.0.0.1:${port}`
 const executable = path.join(root, 'artifacts', process.platform === 'win32' ? 'privrelay-server.exe' : 'privrelay-server')
 const server = spawn(executable, ['-listen', `127.0.0.1:${port}`, '-data', path.join(directory, 'store.enc'), '-classifier', '', '-web', path.join(root, 'web_client/dist')], { windowsHide: true })
+let llmServer
 let output = '', failure
 server.stdout.on('data', chunk => { output += chunk })
 server.on('error', error => { failure = error })
@@ -126,6 +128,32 @@ try {
   assert.equal((await api.searchMessages({ q: 'no-such-synthetic-message' })).total, 0)
   assert.equal((await api.getStatus()).messages, 105)
   console.log('PASS complete server search and pagination across 105 synthetic messages')
+  assert.equal((await api.getLLMSettings()).base_url, '')
+  llmServer = createHTTPServer(async (request, response) => {
+    assert.equal(request.url, '/v1/chat/completions')
+    assert.equal(request.headers.authorization, 'Bearer synthetic-llm-key')
+    let payload = ''; for await (const chunk of request) payload += chunk
+    assert.equal(JSON.parse(payload).model, 'synthetic-model')
+    response.setHeader('Content-Type', 'application/json')
+    response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ category: 'marketing', confidence: 0.99, spam_score: 0.99, needs_review: false, reason: 'promotional' }) } }] }))
+  }).listen(0, '127.0.0.1')
+  await once(llmServer, 'listening')
+  const ai = await api.putLLMSettings({ mode: 'primary', base_url: `http://127.0.0.1:${llmServer.address().port}/v1`, model: 'synthetic-model', api_key: 'synthetic-llm-key', has_api_key: false, allow_http: true, auto_quarantine: true, threshold: 0.95 })
+  assert.equal(ai.has_api_key, true)
+  assert.equal('api_key' in ai, false)
+  assert.equal((await api.testLLM()).synthetic, true)
+  assert.equal((await api.getStatus()).messages, 105, 'probe must not add messages')
+  await api.putRules({ mode: 'block', threshold: 0.95, whitelist: [], blacklist: [] })
+  const aiID = crypto.randomUUID()
+  const aiResponse = await realFetch(`${base}/api/v1/messages/sync`, { method: 'POST', headers: { Authorization: `Bearer ${phone.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ message_id: aiID, sender: 'SYNTHETIC', body: 'Synthetic sale today', received_at: Date.now(), subscription_id: 1, slot: 0 }] }) })
+  assert.equal(aiResponse.status, 200)
+  const aiMessage = (await aiResponse.json()).messages[0]
+  assert.equal(aiMessage.action, 'quarantine')
+  assert.equal(aiMessage.classification_source, 'llm')
+  assert.equal(aiMessage.model_version, 'llm:synthetic-model')
+  assert.equal((await api.searchMessages({ action: 'quarantine' })).total, 1)
+  assert.equal((await api.restoreMessage(aiID, crypto.randomUUID())).action, 'allow')
+  console.log('PASS empty LLM defaults, credential redaction, synthetic probe, real HTTP classification, quarantine and restore')
   await api.revokeDevice(phone.device_id)
   assert.equal((await api.listDevices()).find(d => d.device_id === phone.device_id).active, false)
   console.log('PASS phone upload, frontend list, rules, restore, feedback and revoke')
@@ -134,6 +162,7 @@ try {
   console.log('PASS logout clears the server session')
 } finally {
   globalThis.fetch = realFetch
+  if (llmServer) await new Promise(resolve => llmServer.close(resolve))
   server.kill()
   await once(server, 'exit')
 }

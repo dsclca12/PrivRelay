@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -176,6 +177,12 @@ func (s *Server) handler() http.Handler {
 			s.reviewFeedback(w, r, d)
 		case strings.HasPrefix(path, "/api/v1/messages/") && r.Method == "POST":
 			s.operation(w, r)
+		case path == "/api/v1/ai/settings" && r.Method == "GET":
+			writeJSON(w, 200, s.publicLLM())
+		case path == "/api/v1/ai/test" && r.Method == "POST":
+			s.testLLM(w, r)
+		case path == "/api/v1/ai/settings" && r.Method == "PUT":
+			s.updateLLM(w, r)
 		case path == "/api/v1/filter/rules" && r.Method == "GET":
 			writeJSON(w, 200, s.store.Rules)
 		case path == "/api/v1/filter/rules" && r.Method == "PUT":
@@ -510,14 +517,18 @@ func (s *Server) refreshClassifications() {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	for id, m := range s.store.Messages {
-		if m.Classified {
+		if m.Classified && !m.LLMPending {
 			continue
 		}
 		c, ok := s.classifyContext(ctx, m)
 		if !ok {
 			break
 		}
+		previous := m
 		m = applyPolicy(m, c, true, s.store.Rules)
+		if reflect.DeepEqual(previous, m) {
+			continue
+		}
 		s.store.Revision++
 		m.Revision = s.store.Revision
 		s.store.Messages[id] = m
@@ -548,15 +559,13 @@ func main() {
 	s := newServer(store, *classifier)
 	s.webDir = *webDir
 	s.classifierKey = os.Getenv("CLASSIFIER_API_KEY")
-	if *classifier != "" {
-		go func() {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
-				s.refreshClassifications()
-			}
-		}()
-	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.refreshClassifications()
+		}
+	}()
 	fmt.Printf("PrivRelay listening on %s\nOne-time pairing code (10 minutes): %s\n", *addr, s.code)
 	server := &http.Server{Addr: *addr, Handler: s.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
 	log.Fatal(server.ListenAndServe())

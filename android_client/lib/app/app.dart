@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 
 import '../data/repository.dart';
 import '../features/inbox.dart';
+import '../features/ai_settings.dart';
 import '../features/settings.dart';
 
 final repositoryProvider = Provider<RelayRepository>(
@@ -63,6 +64,7 @@ class _RelayAppState extends ConsumerState<RelayApp>
             path: '/diagnostics',
             builder: (_, _) => const DiagnosticsPage(),
           ),
+          GoRoute(path: '/ai', builder: (_, _) => const AISettingsPage()),
           GoRoute(path: '/rules', builder: (_, _) => const RulesPage()),
           GoRoute(path: '/devices', builder: (_, _) => const DevicesPage()),
         ],

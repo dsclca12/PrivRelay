@@ -142,3 +142,13 @@ export function reviewFeedback(id: string, status: 'approved' | 'rejected'): Pro
 export function getMessage(id: string): Promise<Message> {
   return apiFetch(`/api/v1/messages/${encodeURIComponent(id)}`)
 }
+
+export function getLLMSettings(): Promise<import('./types').LLMSettings> {
+  return apiFetch('/api/v1/ai/settings')
+}
+export function putLLMSettings(settings: import('./types').LLMSettings & { api_key?: string; clear_api_key?: boolean }): Promise<import('./types').LLMSettings> {
+  return apiFetch('/api/v1/ai/settings', { method: 'PUT', body: settings })
+}
+export function testLLM(): Promise<{ category: string; model_version: string; synthetic: boolean }> {
+  return apiFetch('/api/v1/ai/test', { method: 'POST', body: {} })
+}

@@ -42,6 +42,8 @@
         <el-descriptions-item label="需人工复核">
           {{ message.needs_review ? '是' : '否' }}
         </el-descriptions-item>
+        <el-descriptions-item label="分类来源">{{ message.classification_source === 'llm' ? 'LLM' : '轻量分类器' }}{{ message.llm_pending ? ' · 等待 LLM 复核' : '' }}</el-descriptions-item>
+        <el-descriptions-item v-if="message.primary_classification" label="轻量模型原始分类">{{ categoryMeta(message.primary_classification.category).label }} · {{ message.primary_classification.model_version }}</el-descriptions-item>
         <el-descriptions-item label="模型版本">
           {{ message.model_version || '—' }}
         </el-descriptions-item>
@@ -51,7 +53,7 @@
         <el-descriptions-item v-if="message.classifier_reason" label="分类器依据">
           {{ message.classifier_reason }}
         </el-descriptions-item>
-        <el-descriptions-item v-if="message.classifier_threshold !== undefined" label="上游实际阈值">
+        <el-descriptions-item v-if="message.classifier_threshold !== undefined" label="决策实际阈值">
           {{ formatPercent(message.classifier_threshold) }}
         </el-descriptions-item>
       </el-descriptions>

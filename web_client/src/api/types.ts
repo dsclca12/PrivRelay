@@ -21,6 +21,9 @@ export interface Message {
   revision: number
   classified: boolean
   restored: boolean
+  primary_classification?: { category: string; model_version: string; confidence: number; spam_score: number; needs_review: boolean }
+  classification_source?: 'llm' | 'privatesms'
+  llm_pending?: boolean
   classifier_action?: 'allow' | 'block'
   classifier_reason?: string
   classifier_threshold?: number
@@ -66,4 +69,14 @@ export interface RegisterRequest {
 export interface RegisterResponse {
   token: string
   device_id: string
+}
+
+export interface LLMSettings {
+  mode: 'disabled' | 'fallback' | 'primary'
+  base_url: string
+  model: string
+  has_api_key: boolean
+  allow_http: boolean
+  auto_quarantine: boolean
+  threshold: number
 }
