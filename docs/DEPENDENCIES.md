@@ -1,4 +1,6 @@
-# Android MVP 依赖与权限
+# 依赖、许可证与 Android 权限
+
+[项目首页](../README.md) · [文档索引](README.md)
 
 实际版本以 `android_client/pubspec.lock`、Gradle 配置和 `server/go.sum` 为准。
 
@@ -20,7 +22,7 @@
 | gorilla/websocket | Go WebSocket 服务 | BSD-2-Clause |
 | junit / Robolectric / flutter_test / integration_test | 测试，非运行时 SDK | EPL-1.0 / MIT / BSD-3-Clause |
 
-选择了当前能解析安装的版本并检查了上游维护状态：不使用已废弃的 sqlcipher_flutter_libs，也不使用 Android 短信采集第三方插件。Flutter pub 在当前 SDK 限制下保留了若干兼容版本；没有为了追新强制覆盖锁文件。分发前可使用应用内 Flutter 许可证页及上游 NOTICE 进行完整的传递依赖许可复核。
+初始 MVP 选型时检查了依赖解析和上游维护状态（2026-10-21），后续升级需重新检查：不使用已废弃的 sqlcipher_flutter_libs，也不使用 Android 短信采集第三方插件。Flutter pub 在当前 SDK 限制下保留了若干兼容版本；没有为了追新强制覆盖锁文件。分发前可使用应用内 Flutter 许可证页及上游 NOTICE 进行完整的传递依赖许可复核。
 
 Android 权限：
 

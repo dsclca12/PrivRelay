@@ -1,18 +1,12 @@
-# 后端与客户端对接
+# 后端 API 与客户端对接
 
-后端位于 `server/`，沿用 Android MVP 的单用户、单进程加密持久化服务。前端由另一位开发者独立实现，本次只交付后端与接口契约。PostgreSQL、多租户、多实例尚未实现。
+[项目首页](../README.md) · [文档索引](README.md)
 
-## 启动
+后端位于 `server/`，沿用 Android MVP 的单用户、单进程加密持久化服务。当前提供后端与接口契约，尚无可运行的前端交付。PostgreSQL、多租户、多实例尚未实现。
 
-```powershell
-cd server
-go test ./...
-go run . -listen 127.0.0.1:8787 -data data/privrelay.enc -classifier http://127.0.0.1:8000
-```
+## 启动与部署
 
-`-classifier` 可省略，也可通过 `CLASSIFIER_URL` 设置；不可用时仍持久化并 ACK 短信，每分钟补分类。`CLASSIFIER_API_KEY` 作为 `X-API-Key` 传给上游。首次配对码显示在服务终端，有效 10 分钟，成功一次即失效。已授权客户端可以生成新配对码，无需重启。新码取代尚未使用的旧码。
-
-根目录 `docker compose up --build -d` 启动容器；`docker compose logs server` 查看初始配对码。命名卷保存密文和 `.key`，需一起备份。默认只开放宿主机回环 8787，生产环境由可信反向代理提供 HTTPS。容器中的分类器地址不能用宿主机的 `127.0.0.1`，应填写可达的服务名或宿主机地址。Docker 配置需在有 Docker 的环境验证。
+启动参数、分类器配置、Docker、HTTPS 与备份统一见[部署指南](DEPLOYMENT.md)。本文件描述当前实现的接口契约；历史测试结果见[后端自动化验证记录](BACKEND_VALIDATION.md)。
 
 ## 前端接入方式
 
@@ -122,7 +116,7 @@ status 字段：`messages, quarantined, pending_classification, categories, auth
 
 ## Android 联调
 
-现有 `RelayRepository` 可直接使用本服务，无需更改现有字段。首次使用服务终端配对码；后续设备可用网页调用 pairing-codes 取得的新码。开发设备连接后：
+现有 `RelayRepository` 可直接使用本服务，无需更改现有字段。首次使用服务终端配对码；后续设备可用网页调用 pairing-codes 取得的新码。独立测试后端与真实分类器运行、单台开发设备连接后，从仓库根目录执行：
 
 ```powershell
 adb reverse tcp:8787 tcp:8787
@@ -131,12 +125,3 @@ flutter test integration_test/mvp_test.dart --flavor dev -d <序列号> --dart-d
 ```
 
 该集成测试需要可用的真实分类器、使用合成短信，并会撤销测试设备。测试运行器会覆盖 dev 调试应用，不应在用户正式应用上随意执行。生产安卓仍要求 HTTPS；不要通过放宽 Release 明文网络限制完成联调。
-
-## 本次验证（2026-10-21）
-
-- `go test ./... -count=1 -timeout=30s`：14 项通过。
-- `go test -race ./... -count=1 -timeout=30s`：通过；`go vet ./...` 通过，Windows 服务程序构建成功。
-- `flutter test test/backend_contract_test.dart test/data_test.dart`：8 项通过。`contracts/message.json` 同时被 Go 实际上传 ACK 测试与安卓解析测试使用，防止字段漂移。
-- 后端测试覆盖签名配对、配对码轮换及单次消费、手机上传后管理端读取、独立分页、Cookie / Origin 校验、撤销与到期、安卓与浏览器 WebSocket、分类取消后整批落盘、存储失败回滚。
-- 本机服务 `/healthz` 返回 200，未授权读取消息返回 401。当前运行实例未配置分类器，`classifier` 为 `unavailable`，短信会保存并等待后续分类。
-- 本次 ADB 无连接设备，未执行真机集成测试；Docker 未安装，容器配置尚未实跑。上述测试不代表已经完成前端页面或 Android 实机端到端验收。

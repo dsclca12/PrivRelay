@@ -1,8 +1,12 @@
 # PrivRelay Android
 
-Flutter / Kotlin 短信客户端。使用、权限、构建和自托管服务说明见 [Android MVP](../docs/ANDROID_MVP.md)，本次验证见 [测试报告](../docs/ANDROID_TEST_REPORT.md)。
+Flutter / Kotlin 短信客户端。使用、权限、构建和自托管服务说明见 [Android MVP](../docs/ANDROID_MVP.md)，历史验证见 [测试报告](../docs/ANDROID_TEST_REPORT.md)。
+
+[项目首页](../README.md) · [文档索引](../docs/README.md) · [开发指南](../CONTRIBUTING.md)
 
 ## 构建
+
+以下命令在 `android_client/` 中依次执行；先确认 Flutter 版本与根目录 `.fvmrc` 一致。
 
 ```powershell
 flutter pub get
