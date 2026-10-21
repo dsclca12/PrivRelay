@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -36,6 +37,7 @@ type Server struct {
 	client                    *http.Client
 	peers                     map[*websocket.Conn]string
 	failures                  map[string]int
+	webDir                    string
 }
 
 func randomToken() string {
@@ -73,7 +75,11 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 func (s *Server) auth(r *http.Request) (Device, bool) {
 	raw := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if raw == "" || raw == r.Header.Get("Authorization") {
-		return Device{}, false
+		cookie, err := r.Cookie("privrelay_session")
+		if err != nil || (r.Method != "GET" && !sameOrigin(r)) {
+			return Device{}, false
+		}
+		raw = cookie.Value
 	}
 	digest := hash(raw)
 	for _, d := range s.store.Devices {
@@ -105,6 +111,7 @@ func (s *Server) rollback(raw []byte) {
 }
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.serveWeb)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		status := "unavailable"
 		if s.classifier != "" {
@@ -133,10 +140,34 @@ func (s *Server) handler() http.Handler {
 			return
 		}
 		switch {
+		case path == "/api/v1/session" && r.Method == "POST":
+			// Only a bearer-authenticated client may establish a browser session.
+			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || !sameOrigin(r) {
+				writeJSON(w, 403, map[string]string{"error": "origin_rejected"})
+				return
+			}
+			http.SetCookie(w, sessionCookie(r, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), int(time.Until(time.Unix(d.Expires, 0)).Seconds())))
+			writeJSON(w, 200, d.ID)
+		case path == "/api/v1/session" && r.Method == "GET":
+			writeJSON(w, 200, map[string]string{"device_id": d.ID, "name": d.Name})
+		case path == "/api/v1/session" && r.Method == "DELETE":
+			http.SetCookie(w, sessionCookie(r, "", -1))
+			writeJSON(w, 200, map[string]bool{"logged_out": true})
+		case path == "/api/v1/pairing-codes" && r.Method == "POST":
+			s.code = randomToken()
+			s.codeExpires = time.Now().Add(10 * time.Minute)
+			s.failures = map[string]int{}
+			writeJSON(w, 201, map[string]any{"pairing_code": s.code, "expires_at": s.codeExpires.Unix()})
 		case path == "/api/v1/messages/sync" && r.Method == "POST":
 			s.syncMessages(w, r, d)
 		case path == "/api/v1/messages" && r.Method == "GET":
 			s.listMessages(w, r)
+		case (path == "/api/v1/messages/search" || path == "/api/v1/filter/quarantine") && r.Method == "GET":
+			s.searchMessages(w, r)
+		case strings.HasPrefix(path, "/api/v1/messages/") && r.Method == "GET":
+			s.messageDetail(w, r)
+		case path == "/api/v1/status" && r.Method == "GET":
+			s.status(w, r)
 		case strings.HasPrefix(path, "/api/v1/messages/") && r.Method == "POST":
 			s.operation(w, r)
 		case path == "/api/v1/filter/rules" && r.Method == "GET":
@@ -175,7 +206,12 @@ func (s *Server) handler() http.Handler {
 			http.NotFound(w, r)
 		}
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		mux.ServeHTTP(w, r)
+	})
 }
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -255,6 +291,8 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 	before := s.snapshot()
 	result := []Message{}
 	classifierAvailable := true
+	classificationContext, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
 	for _, incoming := range req.Messages {
 		m, exists := s.store.Messages[incoming.ID]
 		if exists && (m.Device != d.ID || m.Sender != incoming.Sender || m.Body != incoming.Body || m.Received != incoming.Received || m.Subscription != incoming.Subscription) {
@@ -277,7 +315,7 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 			var c Classification
 			ok := false
 			if classifierAvailable {
-				c, ok = s.classify(m)
+				c, ok = s.classifyContext(classificationContext, m)
 				classifierAvailable = ok
 			}
 			m = applyPolicy(m, c, ok, s.store.Rules)
@@ -410,7 +448,7 @@ func (s *Server) updateRules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (s *Server) websocket(w http.ResponseWriter, r *http.Request, d Device) {
-	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" }, HandshakeTimeout: 5 * time.Second}
+	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" || sameOrigin(r) }, HandshakeTimeout: 5 * time.Second}
 	conn, err := up.Upgrade(w, r, nil)
 	if err != nil {
 		return
@@ -427,7 +465,13 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request, d Device) {
 	}()
 }
 func (s *Server) broadcast() {
-	for c := range s.peers {
+	for c, id := range s.peers {
+		device, ok := s.store.Devices[id]
+		if !ok || !device.Active || device.Expires <= time.Now().Unix() {
+			c.Close()
+			delete(s.peers, c)
+			continue
+		}
 		_ = c.SetWriteDeadline(time.Now().Add(time.Second))
 		if c.WriteJSON(map[string]string{"event": "changed"}) != nil {
 			c.Close()
@@ -444,11 +488,13 @@ func (s *Server) refreshClassifications() {
 	before := s.snapshot()
 	changed := false
 	processed := 0
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
 	for id, m := range s.store.Messages {
 		if m.Classified {
 			continue
 		}
-		c, ok := s.classify(m)
+		c, ok := s.classifyContext(ctx, m)
 		if !ok {
 			break
 		}
@@ -474,12 +520,14 @@ func main() {
 	addr := flag.String("listen", "127.0.0.1:8787", "HTTP bind (use HTTPS reverse proxy)")
 	data := flag.String("data", "data/privrelay.enc", "encrypted single-owner MVP store")
 	classifier := flag.String("classifier", os.Getenv("CLASSIFIER_URL"), "PrivateSMS classifier base URL")
+	webDir := flag.String("web", "", "optional built frontend directory (disabled by default)")
 	flag.Parse()
 	store, err := openStore(*data)
 	if err != nil {
 		log.Fatal("cannot open protected data store")
 	}
 	s := newServer(store, *classifier)
+	s.webDir = *webDir
 	s.classifierKey = os.Getenv("CLASSIFIER_API_KEY")
 	if *classifier != "" {
 		go func() {

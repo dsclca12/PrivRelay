@@ -7,3 +7,5 @@ key.properties
 server/data/
 /data/
 .kotlin/
+web/node_modules/
+web/dist/

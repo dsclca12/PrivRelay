@@ -1,0 +1,19 @@
+{
+  "message_id": "test-message-0001",
+  "sender": "TEST",
+  "body": "合成短信：周末优惠活动",
+  "received_at": 1000,
+  "subscription_id": 1,
+  "slot": 0,
+  "category": "uncertain",
+  "confidence": 0,
+  "risk": 0,
+  "needs_review": true,
+  "model_version": "",
+  "action": "allow",
+  "reason": "分类不可用，正常保留",
+  "device_id": "test-device-0001",
+  "revision": 1,
+  "classified": false,
+  "restored": false
+}

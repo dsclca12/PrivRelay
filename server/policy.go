@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"math"
@@ -27,11 +28,14 @@ func validClassification(c Classification) bool {
 		!math.IsNaN(c.Risk) && !math.IsInf(c.Risk, 0) && c.Risk >= 0 && c.Risk <= 1
 }
 func (s *Server) classify(m Message) (Classification, bool) {
+	return s.classifyContext(context.Background(), m)
+}
+func (s *Server) classifyContext(ctx context.Context, m Message) (Classification, bool) {
 	if s.classifier == "" {
 		return Classification{}, false
 	}
 	raw, _ := json.Marshal(map[string]string{"text": m.Body, "sender": m.Sender})
-	req, err := http.NewRequest("POST", strings.TrimRight(s.classifier, "/")+"/api/v1/classify", bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(s.classifier, "/")+"/api/v1/classify", bytes.NewReader(raw))
 	if err != nil {
 		return Classification{}, false
 	}

@@ -6,13 +6,15 @@
 
 **文档版本：** v1.1
 
-**项目状态：** Android MVP 已实现，初步设备测试已完成；完整系统仍按本文分阶段推进。
+**项目状态：** Android MVP 已实现，初步设备测试已完成；Go 后端已补齐管理台接口，前端独立开发，完整系统仍按本文分阶段推进。
 
 **文档日期：** 2026 年 10 月 21 日
 
 **项目类型：** 开源软件 / Android 应用 / 分布式系统 / 信息安全
 
 > **当前可运行版本：** [Android MVP 使用与构建说明](docs/ANDROID_MVP.md) · [初步测试报告](docs/ANDROID_TEST_REPORT.md) · [依赖与权限](docs/DEPENDENCIES.md)。客户端位于 `android_client/`，配套单用户 Go 参考服务位于 `server/`。下文是完整系统设计，包含尚未交付的 Web、PostgreSQL、默认短信应用和多版本验收目标；具体实现边界以 MVP 说明为准。
+
+> **后端对接：** [接口契约与启动说明](docs/BACKEND_API.md) 包含安卓同步、网页查询、浏览器会话、设备配对、规则与 Docker 部署说明。前端由其他开发者负责，此仓库本次不交付前端页面。
 
 ---
 
@@ -351,7 +353,7 @@ POST /sms/score
 GET  /healthz
 ```
 
-**PrivRelay 新增接口（规划）：**
+**PrivRelay 主要接口（当前契约见 [后端接口说明](docs/BACKEND_API.md)）：**
 
 ```http
 POST /api/v1/devices/register
@@ -372,7 +374,7 @@ GET  /api/v1/ws
 
 所有需授权的接口必须校验设备身份与访问权限。
 
-以上 PrivRelay 接口均为设计目标，尚不代表已经实现。
+以上接口已由单用户 Go 服务实现；浏览器会话、管理台分页查询、一次性配对码和统计接口见后端接口说明。多租户与 PostgreSQL 仍属于后续设计目标。
 
 ### 4.5 Android 客户端（Flutter）设计要求
 

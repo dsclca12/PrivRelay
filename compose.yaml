@@ -1,0 +1,18 @@
+services:
+  server:
+    build: ./server
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      CLASSIFIER_URL: ${CLASSIFIER_URL:-}
+      CLASSIFIER_API_KEY: ${CLASSIFIER_API_KEY:-}
+    volumes:
+      - relay-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+volumes:
+  relay-data:
