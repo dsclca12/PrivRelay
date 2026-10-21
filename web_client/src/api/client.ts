@@ -4,6 +4,8 @@ const TOKEN_KEY = 'privrelay.token'
 const DEVICE_KEY = 'privrelay.device_id'
 const DEVICE_NAME_KEY = 'privrelay.device_name'
 
+let memoryToken: string | null = null
+
 const BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '')
 
 export function apiBase(): string {
@@ -11,14 +13,15 @@ export function apiBase(): string {
 }
 
 export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+  return memoryToken ?? localStorage.getItem(TOKEN_KEY)
 }
 
 export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token)
+  memoryToken = token
 }
 
 export function clearToken(): void {
+  memoryToken = null
   localStorage.removeItem(TOKEN_KEY)
 }
 
@@ -39,6 +42,7 @@ export function setDeviceName(name: string): void {
 }
 
 export function clearSession(): void {
+  memoryToken = null
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(DEVICE_KEY)
   localStorage.removeItem(DEVICE_NAME_KEY)
@@ -85,6 +89,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       cache: 'no-store',
+      credentials: 'same-origin',
     })
   } catch {
     throw new ApiError(0, 'network_error')

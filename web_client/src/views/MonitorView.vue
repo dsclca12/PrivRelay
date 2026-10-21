@@ -31,22 +31,22 @@
 
       <div class="stat-card">
         <div class="stat-label">消息总数</div>
-        <div class="stat-value">{{ messages.all.length }}</div>
-        <div class="stat-hint">服务端修订号 {{ messages.cursor }}</div>
+        <div class="stat-value">{{ serverStatus?.messages ?? messages.all.length }}</div>
+        <div class="stat-hint">服务端修订号 {{ serverStatus?.revision ?? messages.cursor }}</div>
       </div>
 
       <div class="stat-card">
         <div class="stat-label">拦截 / 已恢复</div>
         <div class="stat-value">
-          {{ messages.quarantined.length }} / {{ restoredCount }}
+          {{ serverStatus?.quarantined ?? messages.quarantined.length }} / {{ restoredCount }}
         </div>
         <div class="stat-hint">拦截均可恢复，首版不执行删除</div>
       </div>
 
       <div class="stat-card">
         <div class="stat-label">已授权设备</div>
-        <div class="stat-value">{{ deviceCount }}</div>
-        <div class="stat-hint">未撤销且令牌未过期</div>
+        <div class="stat-value">{{ serverStatus?.authorized_devices ?? deviceCount }}</div>
+        <div class="stat-hint">WebSocket 已连接 {{ serverStatus?.connected_devices ?? 0 }} 台 · 待分类 {{ serverStatus?.pending_classification ?? 0 }} 条</div>
       </div>
     </div>
 
@@ -55,7 +55,7 @@
       :closable="false"
       show-icon
       style="margin-bottom: 14px"
-      title="服务端暂未提供「在线设备数」接口，此处统计的是已授权设备；实时推送依赖服务端 WebSocket 鉴权改造，未就绪时前端自动降级为 5 秒轮询，功能不受影响。"
+      title="实时推送使用浏览器会话连接，断线时自动重连并以 5 秒轮询补齐消息。"
     />
 
     <el-card shadow="never">
@@ -94,7 +94,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ApiError } from '../api/client'
-import { getHealth, listDevices } from '../api/endpoints'
+import { getHealth, getStatus, listDevices } from '../api/endpoints'
+import type { ServerStatus } from '../api/endpoints'
 import type { Device, Health } from '../api/types'
 import { useSync } from '../composables/useSync'
 import { useLogsStore } from '../stores/logs'
@@ -106,6 +107,7 @@ const logs = useLogsStore()
 const { status: syncStatus, lastSyncAt } = useSync()
 
 const health = ref<Health | null>(null)
+const serverStatus = ref<ServerStatus | null>(null)
 const devices = ref<Device[]>([])
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -150,6 +152,7 @@ async function probe(): Promise<void> {
     }
   }
   try {
+    serverStatus.value = await getStatus()
     devices.value = await listDevices()
   } catch {
     // 列表失败不打扰，下次探测重试

@@ -1,8 +1,8 @@
-import { createRouter, createWebHistory } from 'vue-router'
-import { getToken } from '../api/client'
+import { createRouter, createWebHashHistory } from 'vue-router'
+import { useAuthStore } from '../stores/auth'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHashHistory(),
   routes: [
     {
       path: '/login',
@@ -26,8 +26,9 @@ const router = createRouter({
   ],
 })
 
-router.beforeEach((to) => {
-  const authed = Boolean(getToken())
+router.beforeEach(async (to) => {
+  const auth = useAuthStore()
+  const authed = auth.paired || await auth.restore()
   if (to.path === '/login') {
     return authed ? '/messages' : true
   }

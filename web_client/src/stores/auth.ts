@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
   clearSession,
+  clearToken,
   getDeviceId,
   getDeviceName,
   getToken,
@@ -10,7 +11,7 @@ import {
   setDeviceName,
   setToken,
 } from '../api/client'
-import { registerDevice } from '../api/endpoints'
+import { createSession, deleteSession, getSession, registerDevice } from '../api/endpoints'
 import router from '../router'
 import { buildPairingRequest } from '../utils/pairing'
 
@@ -34,32 +35,65 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref(getToken() ?? '')
   const deviceId = ref(getDeviceId())
   const deviceName = ref(getDeviceName())
-  const paired = computed(() => token.value.length > 0)
+  let pendingPairToken: string | null = null
+  const authenticated = ref(false)
+  const paired = computed(() => authenticated.value)
 
   /** 使用服务端控制台输出的一次性配对码注册本浏览器 */
   async function pair(pairingCode: string, name: string): Promise<void> {
+    if (pendingPairToken) {
+      await useToken(pendingPairToken)
+      pendingPairToken = null
+      return
+    }
     const request = await buildPairingRequest({ pairingCode, deviceName: name })
     const response = await registerDevice(request)
-    token.value = response.token
-    deviceId.value = response.device_id
-    deviceName.value = request.name
+    // Keep the returned token in memory until session creation succeeds, so a
+    // transient failure can be retried without consuming another pairing code.
+    pendingPairToken = response.token
     setToken(response.token)
-    setDeviceId(response.device_id)
-    setDeviceName(request.name)
+    await useToken(response.token, response.device_id)
+    pendingPairToken = null
   }
 
-  /** 手动粘贴访问令牌（高级用法 / 故障恢复） */
-  function useToken(rawToken: string, id: string): void {
-    token.value = rawToken.trim()
-    deviceId.value = id.trim() || deviceId.value
-    setToken(token.value)
-    if (deviceId.value) {
-      setDeviceId(deviceId.value)
+  async function useToken(rawToken: string, _id = ''): Promise<void> {
+    setToken(rawToken.trim())
+    await createSession()
+    const session = await getSession()
+    deviceId.value = session.device_id
+    deviceName.value = session.name
+    setDeviceId(session.device_id)
+    setDeviceName(session.name)
+    clearToken()
+    token.value = ''
+    authenticated.value = true
+  }
+
+  async function restore(): Promise<boolean> {
+    try {
+      if (getToken()) await useToken(getToken()!)
+      const session = await getSession()
+      deviceId.value = session.device_id
+      deviceName.value = session.name
+      authenticated.value = true
+      return true
+    } catch {
+      clearToken()
+      authenticated.value = false
+      return false
     }
   }
 
   /** 退出登录（保留服务端数据，仅清除本浏览器会话） */
-  function logout(options: { expired?: boolean } = {}): void {
+  async function logout(options: { expired?: boolean } = {}): Promise<void> {
+    if (!options.expired) {
+      try { await deleteSession() } catch {
+        ElMessage.error('退出失败，请检查连接后重试')
+        return
+      }
+    }
+    pendingPairToken = null
+    authenticated.value = false
     token.value = ''
     deviceId.value = ''
     deviceName.value = ''
@@ -70,5 +104,5 @@ export const useAuthStore = defineStore('auth', () => {
     void router.replace('/login')
   }
 
-  return { token, deviceId, deviceName, paired, pair, useToken, logout }
+  return { token, deviceId, deviceName, paired, pair, useToken, restore, logout }
 })

@@ -11,13 +11,25 @@
 | Android | Flutter / Kotlin、新短信接收、加密存储、离线队列、收件箱、隔离与恢复 | 非默认短信应用；不导入系统历史、不发送短信，不能抑制系统短信应用通知 |
 | Go 服务 | 签名配对、消息同步与查询、规则、纠错、设备撤销、浏览器会话、WebSocket | 单用户、单进程、加密文件快照；尚无 PostgreSQL、多租户、多实例支持 |
 | 分类器 | 对接独立分类服务；异常时保存原文并等待补分类 | 本仓库不分发模型；未经校准或需复核的预测不能仅凭分数自动隔离 |
-| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、运行监控；管理台 API 与静态目录托管 | 浏览器无法携带鉴权头连接 WebSocket，前端自动降级为 5 秒轮询；尚无多用户与权限体系 |
+| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、运行监控；管理台 API 与静态目录托管 | 浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
 
 服务器及分类服务能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
 
 ## 快速开始
 
 以下 PowerShell 命令从仓库根目录开始。后端需要 Go 1.25 或兼容工具链；Android 需要根目录 [.fvmrc](.fvmrc) 指定的 Flutter 3.47.7、JDK 17 和 Android SDK；Web 控制台需要 Node.js 20 或更高版本。
+
+### 一起启动 Web 与后端（Windows）
+
+```powershell
+./tools/start.ps1
+```
+
+脚本安装缺失的 Web 依赖、构建前后端，然后由 Go 在同一个地址提供网页和 API。打开 `http://127.0.0.1:8787`，用终端显示的一次性码登录。设备中心可生成新码供手机配对，无需重启服务。默认沿用 `server/data/privrelay.enc`；按 Ctrl+C 停止。
+
+接入分类器：`./tools/start.ps1 -Classifier http://127.0.0.1:18788`。不配置时消息照常保存、显示为待分类。Docker 执行 `docker compose up --build -d` 也会构建并托管网页。
+
+以下为分别启动各模块的开发方式。
 
 ### 1. 启动后端
 

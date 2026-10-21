@@ -1,133 +1,50 @@
 # PrivRelay Web 控制台
 
-Vue 3 + TypeScript 实现的浏览器控制台，对接 `server/` 的单用户 Go 参考服务，提供 README §3.5 要求的五个中心：
+Vue 3 + TypeScript + Element Plus，提供消息、隔离、设备、规则与运行监控。
 
-| 页面 | 路由 | 能力 |
-| --- | --- | --- |
-| 消息中心 | `/messages` | 全量消息浏览、分类 / 动作 / 关键字过滤、分页、详情抽屉、恢复与分类纠错 |
-| 拦截中心 | `/quarantine` | 拦截统计、拦截原因分布、恢复与纠错、行内 popconfirm 恢复 |
-| 设备中心 | `/devices` | 设备列表、公钥指纹、授权状态与到期时间、浏览器配对、撤销授权 |
-| 规则中心 | `/rules` | 模式 A/B/C、隔离阈值（0.80–1.00）、白名单 / 黑名单、脏数据提示与保存 |
-| 运行监控 | `/monitor` | 服务与分类服务健康探测、同步方式、消息 / 拦截 / 设备统计、本地运行日志 |
+## 前后端一起启动
 
-其他：登录 / 配对页（WebCrypto ECDSA P-256 配对，或粘贴访问令牌）、深浅色主题、响应式折叠侧栏、401 自动登出。
+仓库根目录执行 `./tools/start.ps1`，浏览器打开 `http://127.0.0.1:8787`。脚本需要 Node.js 20+ 和 Go 1.25（支持本仓库 `.tools/go`），首次自动安装 Web 依赖；沿用 `server/data/privrelay.enc`，不会清除已有数据。
 
-## 技术栈
+登录页输入服务端终端打印的 10 分钟一次性配对码。设备中心可生成新码供手机或其他浏览器使用；生成新码会使旧码失效。
 
-- Vue 3.5 + TypeScript（`vue-tsc --noEmit` 严格模式通过）
-- Vite 6、vue-router 4、Pinia 2
-- Element Plus 2 + `@element-plus/icons-vue`（全量引入，默认中文语言包）
-- 无额外样式框架，深色模式使用 Element Plus 官方 dark css vars
+## 开发
 
-## 目录结构
+先启动 Go 后端，再在此目录执行 `npm ci`、`npm run dev`。Vite 将 `/api`（包括 WebSocket）和 `/healthz` 代理至 `http://127.0.0.1:8787`，保留 Host / Origin 以通过同源校验。PowerShell 可用 `$env:PRIVRELAY_API='http://其他后端地址:8787'` 修改代理目标。
 
-```
-web_client/
-├─ src/
-│  ├─ api/            # client.ts（fetch 封装 / 令牌 / 错误码）、endpoints.ts、types.ts、mock.ts
-│  ├─ components/     # MessageTable、MessageDetailDrawer
-│  ├─ composables/    # useSync.ts（WebSocket + 轮询降级、401 处理）
-│  ├─ layout/         # MainLayout.vue（侧栏 / 顶栏 / 主题 / 同步状态）
-│  ├─ router/
-│  ├─ stores/         # auth、messages、logs
-│  ├─ utils/          # format、pairing（WebCrypto 配对）、uuid
-│  ├─ views/          # Login / Messages / Quarantine / Rules / Devices / Monitor
-│  ├─ styles/main.css
-│  ├─ App.vue
-│  └─ main.ts
-├─ index.html
-├─ vite.config.ts
-├─ tsconfig.json
-└─ package.json
-```
+`npm run build` 执行 TypeScript 检查和生产构建；`npm run preview` 仅预览静态产物，联调请用开发服务器或 Go 的 `-web` 托管。
 
-## 快速开始
+## 登录与同步
 
-要求 Node.js ≥ 20（开发时使用 Node 24 LTS 验证）。先在 `server/` 启动 Go 服务（默认监听 `127.0.0.1:8787`，启动日志会打印一次性配对码）：
+- WebCrypto 生成 P-256 签名，原始文本交给 ECDSA + SHA-256，签名从 r || s 转为 ASN.1 DER 后注册。
+- 注册令牌仅暂存在内存，随后调用 session 接口换取 HttpOnly、SameSite=Strict Cookie；已有 localStorage 令牌登录时会自动迁移并移除。
+- 页面刷新通过 `GET /api/v1/session` 恢复身份，退出调用 `DELETE /api/v1/session` 清除服务端 Cookie。
+- WebSocket 使用同源 Cookie 连接 `/api/v1/ws`，不把令牌放进 URL。收到 changed 立即补拉，重连后补拉历史，5 秒轮询兜底。
+- 消息按 revision 增量读取，支持过滤、分页、详情、恢复和纠错；规则中心保存完整规则。
 
-```bash
-cd web_client
-npm install
-npm run dev          # http://localhost:5173
+## 部署
+
+执行仓库根目录的 `docker compose up --build -d`，同一容器提供网页与 API。也可构建后执行 `server -web <web_client/dist绝对路径>`。网页使用 hash 路由，直接刷新不需要服务器 SPA 回退。生产使用 HTTPS 反向代理并保留公网 Host。
+
+API 与网页必须同源，不直接跨域部署。CSP 允许 Element Plus 所需的内联样式，脚本与网络请求仍限制为同源。服务端不开放 CORS。
+
+## 验证
+
+仓库根目录：
+
+```powershell
+npm run build --prefix web_client
+cd server
+../.tools/go/bin/go.exe test ./...
+../.tools/go/bin/go.exe build -o ../artifacts/privrelay-server.exe .
+cd ..
+node tools/smoke_web.mjs
 ```
 
-开发服务器把 `/api`、`/healthz` 代理到 `PRIVRELAY_API`（默认 `http://127.0.0.1:8787`，`/api` 同时开启 `ws: true`）。需要指向其他地址时：
+冒烟脚本实际打包并调用前端签名和 API 代码，使用隔离的加密存储与合成短信验证配对、Cookie、手机身份上传、规则、恢复、反馈、撤销和退出，不依赖分类器，不修改日常数据。
 
-```bash
-PRIVRELAY_API=http://192.168.1.10:8787 npm run dev
-```
+演示模式可用 `$env:VITE_MOCK='1'; npm run dev`，不连接真实 API。WebCrypto 配对需 localhost 或 HTTPS。
 
-登录页输入服务端日志中的配对码即可完成配对。配对流程在浏览器内用 WebCrypto 生成 ECDSA P-256 密钥，签名内容与 `server/main.go` 校验逻辑严格一致：
+## 当前边界
 
-```
-SHA256(device_id + "\n" + base64(spki) + "\n" + nonce + "\n" + pairing_code)
-```
-
-私钥不落盘（仅本次配对使用），访问令牌保存在 `localStorage`。
-
-## 演示模式（无需后端）
-
-```bash
-VITE_MOCK=1 npm run dev          # PowerShell: $env:VITE_MOCK='1'; npm run dev
-```
-
-`src/api/mock.ts` 提供内存演示数据（14 条消息、2 台设备、规则、健康检查），可完整走通配对、浏览、恢复、纠错、规则保存、撤销等交互。配对码随意输入非空值即可。
-
-## 构建与部署
-
-```bash
-npm run build        # vue-tsc --noEmit && vite build，产物在 dist/
-npm run preview      # 本地预览产物
-```
-
-服务端没有 CORS 头，**生产环境必须与 API 同源**，即用反向代理同时提供 `dist/` 与 `/api`、`/healthz`。Caddy 示例：
-
-```caddyfile
-relay.example.com {
-    handle /api/* {
-        reverse_proxy 127.0.0.1:8787
-    }
-    handle /healthz {
-        reverse_proxy 127.0.0.1:8787
-    }
-    handle {
-        root * /srv/privrelay/web_client/dist
-        try_files {path} /index.html
-        file_server
-    }
-}
-```
-
-Nginx 等价配置需为 `location / { try_files $uri $uri/ /index.html; }`，并将 `/api/`、`/healthz` 反代到 Go 服务。
-
-若必须跨源部署，可在构建时设置 `VITE_API_BASE=https://api.example.com`，但需要自行给 Go 服务补 CORS 中间件，否则浏览器会拦截请求。
-
-## 与 Go 服务的接口对照
-
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| GET | `/healthz` | 服务与分类器健康状态 |
-| POST | `/api/v1/devices/register` | 配对注册，返回访问令牌 |
-| GET | `/api/v1/messages?cursor=&limit=` | 按 `revision` 游标增量拉取 |
-| POST | `/api/v1/messages/{id}/restore` | 恢复到收件箱（幂等键 `operation_id`） |
-| POST | `/api/v1/messages/{id}/feedback` | 分类纠错（进入待审核队列） |
-| GET / PUT | `/api/v1/filter/rules` | 读取 / 更新规则（模式、阈值、名单） |
-| GET | `/api/v1/devices` | 设备列表 |
-| DELETE | `/api/v1/devices/{id}` | 撤销设备授权 |
-
-消息字段（`message_id`、`sender`、`body`、`received_at`、`category`、`confidence`、`risk`、`needs_review`、`model_version`、`action`、`reason`、`device_id`、`revision`、`classified`、`restored` 等）与 `server/store.go` 的 JSON 契约一一对应。
-
-## 同步策略
-
-1. 进入控制台后先按游标拉全量历史（50 条/页，最多 400 页；超出时页面提供“加载更多历史”）。
-2. 之后每 5 秒增量拉取一页，标签页重新可见时立即补拉。
-3. 尝试连接 `/api/v1/ws`，收到 `changed` 事件立即刷新；连接失败自动降级为轮询并在顶栏显示“轮询同步”。
-4. 任何接口返回 401/403 时清除本地会话并跳回登录页。
-
-## 已知限制
-
-- **WebSocket 实时推送暂不可用**：服务端 `/api/v1/ws` 只从 `Authorization` 头读取令牌，且 `CheckOrigin` 仅接受空 `Origin`；浏览器 WebSocket 无法携带自定义请求头、且必然发送 `Origin`。前端已实现自动降级轮询，功能不受影响。若要让实时推送生效，需要服务端支持从查询参数或子协议读取令牌，并放宽同源 Origin 校验。
-- **必须同源部署**：Go 服务未提供 CORS 响应头，跨源直连会被浏览器拦截；开发环境依赖 Vite 代理，生产环境依赖反向代理（见上）。
-- **冷启动全量扫描**：服务端游标只能升序翻页，刷新页面后会从头扫描历史。个人短信量级（万条内）开销很小，数据量更大时建议服务端支持倒序分页。
-- **Element Plus 全量引入**：主包约 1.2 MB（gzip 390 KB）。控制台场景可接受；如需优化可改为按需引入。
-- 撤销当前浏览器自身设备后会立即回到登录页，需要重新配对；服务端不会删除消息与历史记录。
+单用户，无多租户或角色权限。冷启动以 50 条每页读取历史，超过 2 万条需加载更多。分类器未配置时照常保存并显示待分类；真实 Android 收信、后台运行及真实模型效果需另外实机验收。

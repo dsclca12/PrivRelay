@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { ApiError, apiBase, getToken } from '../api/client'
+import { ApiError, apiBase } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 import { useLogsStore } from '../stores/logs'
 import { useMessagesStore } from '../stores/messages'
@@ -47,14 +47,9 @@ async function refresh(maxPages = 1): Promise<void> {
 }
 
 function buildWsUrl(): string {
-  const base = apiBase()
-  const origin =
-    base === ''
-      ? `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`
-      : base.replace(/^http/, 'ws')
-  // 服务端当前仅从 Authorization 头读取令牌，浏览器 WebSocket 无法携带请求头，
-  // 这里以 query 参数尽力传递；服务端支持后即可生效，失败则自动降级轮询。
-  return `${origin}/api/v1/ws?token=${encodeURIComponent(getToken() ?? '')}`
+  const url = new URL(`${apiBase()}/api/v1/ws`, location.href)
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  return url.toString()
 }
 
 function scheduleWsRetry(): void {
@@ -70,7 +65,7 @@ function scheduleWsRetry(): void {
 }
 
 function connectWs(): void {
-  if (!getToken()) {
+  if (!useAuthStore().paired || import.meta.env.VITE_MOCK === '1') {
     return
   }
   let candidate: WebSocket
@@ -87,6 +82,7 @@ function connectWs(): void {
   candidate.onopen = () => {
     if (socket !== candidate) return
     status.value = 'live'
+    void refresh(400)
   }
   candidate.onmessage = (event) => {
     if (socket !== candidate) return

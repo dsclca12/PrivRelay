@@ -2,7 +2,7 @@
 
 [项目首页](../README.md) · [文档索引](README.md)
 
-后端位于 `server/`，沿用 Android MVP 的单用户、单进程加密持久化服务。当前提供后端与接口契约，尚无可运行的前端交付。PostgreSQL、多租户、多实例尚未实现。
+后端位于 `server/`，沿用 Android MVP 的单用户、单进程加密持久化服务。Web 控制台位于 `web_client/`，可通过根目录 `tools/start.ps1` 与后端一起构建启动。PostgreSQL、多租户、多实例尚未实现。
 
 ## 启动与部署
 
@@ -12,7 +12,7 @@
 
 建议前端通过同源代理访问 `/api/v1/*` 和 `/healthz`，WebSocket 路径 `/api/v1/ws` 也需代理。开发代理保留原始 Host / Origin；生产反向代理保留公网 Host，设置 `X-Forwarded-Proto: https`。不要将不可信客户端传入的转发头直接交给后端。后端不开放跨域 CORS。
 
-可选 `-web <前端构建目录>` 由后端提供静态文件。默认关闭；不会自动构建前端，也不提供 SPA history 回退，前端可采用 hash 路由。静态响应的 CSP 只允许同源脚本、样式和连接；不要依赖内联脚本、内联样式或 CDN。
+可选 `-web <前端构建目录>` 由后端提供静态文件。默认关闭；不会自动构建前端，也不提供 SPA history 回退，前端可采用 hash 路由。静态响应的 CSP 只允许同源脚本与连接，并允许 Element Plus 所需的内联样式；不要依赖内联脚本或 CDN。
 
 浏览器配对流程：
 

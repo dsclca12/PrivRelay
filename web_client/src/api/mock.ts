@@ -256,6 +256,24 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
   const s = ensureState()
   const url = new URL(path, 'http://mock.local')
 
+  if (url.pathname === '/api/v1/session') {
+    if (method === 'POST') {
+      localStorage.setItem('privrelay.demo-session', '1')
+      return 'demo-pixel8-7f21c4a9' as T
+    }
+    if (method === 'DELETE') {
+      localStorage.removeItem('privrelay.demo-session')
+      return { logged_out: true } as T
+    }
+    if (!localStorage.getItem('privrelay.demo-session')) throw new Error('pairing_required')
+    return { device_id: 'demo-pixel8-7f21c4a9', name: '演示浏览器' } as T
+  }
+  if (url.pathname === '/api/v1/pairing-codes' && method === 'POST') {
+    return { pairing_code: 'demo-pairing-code', expires_at: Math.floor(Date.now() / 1000) + 600 } as T
+  }
+  if (url.pathname === '/api/v1/status') {
+    return { messages: s.messages.length, quarantined: s.messages.filter(m => m.action === 'quarantine').length, pending_classification: 0, authorized_devices: s.devices.filter(d => d.active).length, connected_devices: 0, pending_feedback: 0, revision: s.revision } as T
+  }
   if (url.pathname === '/healthz') {
     return { status: 'ok', classifier: 'ok' } as T
   }

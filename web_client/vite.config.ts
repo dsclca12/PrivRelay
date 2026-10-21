@@ -11,8 +11,8 @@ export default defineConfig({
   server: {
     proxy: {
       // REST 与 WebSocket 一并代理，浏览器侧保持同源，绕开服务端无 CORS 头的限制
-      '/api': { target: apiTarget, changeOrigin: true, ws: true },
-      '/healthz': { target: apiTarget, changeOrigin: true },
+      '/api': { target: apiTarget, changeOrigin: false, ws: true },
+      '/healthz': { target: apiTarget, changeOrigin: false },
     },
   },
   build: {

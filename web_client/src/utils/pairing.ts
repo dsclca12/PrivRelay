@@ -30,14 +30,21 @@ export async function buildPairingRequest(input: PairingInput): Promise<Register
   ])
   const publicKey = toBase64(await crypto.subtle.exportKey('spki', keyPair.publicKey))
 
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(`${deviceId}\n${publicKey}\n${nonce}\n${code}`),
-  )
-  // WebCrypto 的 ECDSA 签名即 ASN.1 DER，与 Go ecdsa.VerifyASN1 兼容
-  const signature = toBase64(
-    await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, keyPair.privateKey, digest),
-  )
+  const payload = new TextEncoder().encode(`${deviceId}\n${publicKey}\n${nonce}\n${code}`)
+  // WebCrypto hashes the payload itself and returns IEEE P1363 r || s.
+  // Go VerifyASN1 expects the two unsigned integers in an ASN.1 sequence.
+  const raw = new Uint8Array(await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' }, keyPair.privateKey, payload,
+  ))
+  function integer(bytes: Uint8Array): number[] {
+    let start = 0
+    while (start < bytes.length - 1 && bytes[start] === 0) start++
+    const value = Array.from(bytes.slice(start))
+    if (value[0]! & 0x80) value.unshift(0)
+    return [0x02, value.length, ...value]
+  }
+  const values = [...integer(raw.slice(0, 32)), ...integer(raw.slice(32))]
+  const signature = toBase64(new Uint8Array([0x30, values.length, ...values]).buffer)
 
   return {
     device_id: deviceId,

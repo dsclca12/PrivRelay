@@ -1,0 +1,10 @@
+.git
+.tools
+artifacts
+data
+server/data
+**/node_modules
+**/dist
+android_client
+web
+.env

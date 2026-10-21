@@ -47,7 +47,7 @@ docker compose logs server
 
 `compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY`；可使用本机环境变量或被忽略的根目录 `.env` 配置。
 
-容器中的 `127.0.0.1` 指向容器本身；分类器地址应使用容器可达的服务名或宿主机地址。本 Compose 只启动 Go 服务，不启动分类器、反向代理或前端。现有历史报告未覆盖 Docker 实跑，部署后需检查容器日志、卷权限和健康接口。
+容器中的 `127.0.0.1` 指向容器本身；分类器地址应使用容器可达的服务名或宿主机地址。本 Compose 构建 Web 控制台并由 Go 同源托管，不启动分类器或反向代理。现有历史报告未覆盖 Docker 实跑，部署后需检查容器日志、卷权限和健康接口。
 
 更新镜像可再次执行 `docker compose up --build -d`。不要使用 `docker compose down -v` 停机，该命令会删除保存运行数据的卷。
 
@@ -58,7 +58,7 @@ docker compose logs server
 - 代理 `/api/v1/*` 和 `/healthz`；`/api/v1/ws` 需要支持 WebSocket 升级。
 - 保留公网 Host，HTTPS 代理设置 `X-Forwarded-Proto: https`；覆盖不可信客户端传入的转发头。
 - 浏览器页面和 API 使用同源；后端不开放跨域 CORS，Cookie 写请求校验 Origin。
-- `-web` 静态响应 CSP 仅允许同源脚本、样式与连接。前端不能依赖内联脚本、内联样式或 CDN；无 history 回退时可使用 hash 路由。
+- `-web` 静态响应 CSP 仅允许同源脚本与连接，允许 Element Plus 必需的内联样式。前端不能依赖内联脚本或 CDN；无 history 回退时可使用 hash 路由。
 
 配对签名、浏览器 Cookie 和授权行为见 [API 文档](BACKEND_API.md#前端接入方式)。所有授权设备都具有单用户管理权限，不能将它部署为隔离多个用户的共享服务。
 
@@ -92,4 +92,4 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 | 配对返回 403 / 429 | 码是否过期或消费、签名格式是否正确；单来源失败达 10 次后需要新码或重启服务 |
 | 上传返回 503 | 数据目录或卷权限、磁盘空间；保留原始消息等待重试，不清空本地库 |
 | 浏览器写入被拒绝 | Host / Origin 同源、代理转发头、会话过期与设备撤销状态 |
-| 静态页面 404 | 是否显式设置 `-web`、构建目录是否存在；仓库没有默认前端或 history 回退 |
+| 静态页面 404 | 是否显式设置 `-web`、构建目录是否存在；统一入口使用 web_client/dist 与 hash 路由，无 history 回退 |

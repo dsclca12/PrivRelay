@@ -7,6 +7,7 @@ import type { Message } from '../api/types'
 const COLD_MAX_PAGES = 400
 
 export const useMessagesStore = defineStore('messages', () => {
+  let epoch = 0
   const byId = ref<Record<string, Message>>({})
   const cursor = ref(0)
   const hasMore = ref(false)
@@ -42,11 +43,13 @@ export const useMessagesStore = defineStore('messages', () => {
       return
     }
     loading.value = true
+    const generation = epoch
     try {
       let pages = 0
       let more = true
       while (more && pages < maxPages) {
         const page = await listMessages(cursor.value, 50)
+        if (generation !== epoch) return
         apply(page.messages)
         cursor.value = page.cursor
         more = page.has_more
@@ -56,7 +59,7 @@ export const useMessagesStore = defineStore('messages', () => {
       lastSyncAt.value = Date.now()
       loaded.value = true
     } finally {
-      loading.value = false
+      if (generation === epoch) loading.value = false
     }
   }
 
@@ -68,6 +71,7 @@ export const useMessagesStore = defineStore('messages', () => {
   }
 
   function $reset(): void {
+    epoch++
     byId.value = {}
     cursor.value = 0
     hasMore.value = false

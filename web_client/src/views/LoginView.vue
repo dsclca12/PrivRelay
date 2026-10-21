@@ -128,8 +128,10 @@ async function handleToken(): Promise<void> {
   }
   entering.value = true
   try {
-    auth.useToken(tokenInput.value, deviceIdInput.value)
+    await auth.useToken(tokenInput.value, deviceIdInput.value)
     await redirectNext()
+  } catch (error) {
+    ElMessage.error(error instanceof ApiError ? errorText(error.code) : '登录失败，请重试')
   } finally {
     entering.value = false
   }

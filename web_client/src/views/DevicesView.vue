@@ -30,29 +30,13 @@
         type="info"
         :closable="false"
         show-icon
-        title="配对码在服务端启动时打印在控制台，10 分钟内有效且只可使用一次；也可用它为手机端配对。"
+        title="生成一次性配对码，在手机或另一浏览器中输入。有效期 10 分钟；生成新码会使旧码失效。"
         style="margin-bottom: 14px"
       />
       <div class="toolbar" style="margin-bottom: 0">
-        <el-input
-          v-model="pairingCode"
-          placeholder="一次性配对码"
-          clearable
-          style="width: 260px"
-          @keyup.enter="handlePair"
-        />
-        <el-input
-          v-model="pairingName"
-          placeholder="设备名称"
-          maxlength="64"
-          clearable
-          style="width: 220px"
-          @keyup.enter="handlePair"
-        />
-        <el-button type="primary" :loading="pairing" @click="handlePair">
-          <el-icon style="margin-right: 4px"><Key /></el-icon>
-          生成密钥并配对
-        </el-button>
+        <el-button type="primary" :loading="pairing" @click="handlePair">生成配对码</el-button>
+        <el-input v-if="pairingCode" :model-value="pairingCode" readonly style="max-width: 480px" />
+        <span v-if="pairingExpires" class="muted">有效至 {{ formatDateTime(pairingExpires * 1000) }}</span>
       </div>
     </el-card>
 
@@ -116,7 +100,7 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref } from 'vue'
 import { apiBase, ApiError } from '../api/client'
-import { listDevices, revokeDevice } from '../api/endpoints'
+import { createPairingCode, listDevices, revokeDevice } from '../api/endpoints'
 import type { Device } from '../api/types'
 import { errorText, useAuthStore } from '../stores/auth'
 import { useLogsStore } from '../stores/logs'
@@ -129,7 +113,7 @@ const devices = ref<Device[]>([])
 const loading = ref(false)
 const pairing = ref(false)
 const pairingCode = ref('')
-const pairingName = ref(auth.deviceName || 'Web 控制台')
+const pairingExpires = ref(0)
 
 const serverAddress = apiBase() || `${location.host}（同源）`
 const activeCount = computed(
@@ -161,19 +145,14 @@ async function load(): Promise<void> {
 }
 
 async function handlePair(): Promise<void> {
-  if (!pairingCode.value.trim()) {
-    ElMessage.warning('请输入配对码')
-    return
-  }
   pairing.value = true
   try {
-    await auth.pair(pairingCode.value, pairingName.value)
-    pairingCode.value = ''
-    ElMessage.success('配对成功，新设备密钥已生成')
-    logs.push('info', '完成一次设备配对')
-    await load()
+    const result = await createPairingCode()
+    pairingCode.value = result.pairing_code
+    pairingExpires.value = result.expires_at
+    ElMessage.success('请在新设备中输入配对码')
   } catch (error) {
-    ElMessage.error(error instanceof ApiError ? errorText(error.code) : '配对失败，请重试')
+    ElMessage.error(error instanceof ApiError ? errorText(error.code) : '生成配对码失败')
   } finally {
     pairing.value = false
   }
