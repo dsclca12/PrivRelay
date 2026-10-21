@@ -6,11 +6,13 @@
 
 **文档版本：** v1.1
 
-**项目状态：** 立项 / 系统集成准备阶段
+**项目状态：** Android MVP 已实现，初步设备测试已完成；完整系统仍按本文分阶段推进。
 
 **文档日期：** 2026 年 10 月 21 日
 
 **项目类型：** 开源软件 / Android 应用 / 分布式系统 / 信息安全
+
+> **当前可运行版本：** [Android MVP 使用与构建说明](docs/ANDROID_MVP.md) · [初步测试报告](docs/ANDROID_TEST_REPORT.md) · [依赖与权限](docs/DEPENDENCIES.md)。客户端位于 `android_client/`，配套单用户 Go 参考服务位于 `server/`。下文是完整系统设计，包含尚未交付的 Web、PostgreSQL、默认短信应用和多版本验收目标；具体实现边界以 MVP 说明为准。
 
 ---
 

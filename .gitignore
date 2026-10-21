@@ -1,0 +1,9 @@
+.tools/
+artifacts/
+.env
+*.jks
+*.keystore
+key.properties
+server/data/
+/data/
+.kotlin/

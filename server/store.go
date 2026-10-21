@@ -1,0 +1,135 @@
+package main
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+)
+
+type Message struct {
+	ID           string  `json:"message_id"`
+	Sender       string  `json:"sender"`
+	Body         string  `json:"body"`
+	Received     int64   `json:"received_at"`
+	Subscription int     `json:"subscription_id"`
+	Slot         int     `json:"slot"`
+	Category     string  `json:"category"`
+	Confidence   float64 `json:"confidence"`
+	Risk         float64 `json:"risk"`
+	Review       bool    `json:"needs_review"`
+	Model        string  `json:"model_version"`
+	Action       string  `json:"action"`
+	Reason       string  `json:"reason"`
+	Device       string  `json:"device_id"`
+	Revision     int64   `json:"revision"`
+	Classified   bool    `json:"classified"`
+	Restored     bool    `json:"restored"`
+}
+type Device struct {
+	ID        string `json:"device_id"`
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+	TokenHash string `json:"token_hash,omitempty"`
+	Active    bool   `json:"active"`
+	Expires   int64  `json:"expires_at"`
+}
+type Rules struct {
+	Mode      string   `json:"mode"`
+	Threshold float64  `json:"threshold"`
+	Whitelist []string `json:"whitelist"`
+	Blacklist []string `json:"blacklist"`
+}
+type Feedback struct {
+	ID        string `json:"operation_id"`
+	MessageID string `json:"message_id"`
+	Category  string `json:"corrected_category"`
+	Status    string `json:"review_status"`
+}
+type Store struct {
+	Messages map[string]Message  `json:"messages"`
+	Devices  map[string]Device   `json:"devices"`
+	Feedback map[string]Feedback `json:"feedback"`
+	Rules    Rules               `json:"rules"`
+	Revision int64               `json:"revision"`
+	path     string
+	key      []byte
+}
+
+func openStore(path string) (*Store, error) {
+	s := &Store{Messages: map[string]Message{}, Devices: map[string]Device{}, Feedback: map[string]Feedback{},
+		Rules: Rules{Mode: "classify", Threshold: 0.95, Whitelist: []string{}, Blacklist: []string{}}, path: path}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	key, err := os.ReadFile(path + ".key")
+	if errors.Is(err, os.ErrNotExist) {
+		if _, e := os.Stat(path); e == nil {
+			return nil, errors.New("data exists but key is missing")
+		}
+		key = make([]byte, 32)
+		if _, err = rand.Read(key); err != nil {
+			return nil, err
+		}
+		if err = os.WriteFile(path+".key", key, 0600); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+	if len(key) != 32 {
+		return nil, errors.New("invalid storage key")
+	}
+	s.key = key
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return s, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	block, _ := aes.NewCipher(key)
+	gcm, _ := cipher.NewGCM(block)
+	if len(raw) < gcm.NonceSize() {
+		return nil, errors.New("invalid store")
+	}
+	plain, err := gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], []byte("PrivRelay-v1"))
+	if err != nil {
+		return nil, err
+	}
+	if err = json.Unmarshal(plain, s); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+func (s *Store) save() error {
+	plain, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	block, _ := aes.NewCipher(s.key)
+	gcm, _ := cipher.NewGCM(block)
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err = rand.Read(nonce); err != nil {
+		return err
+	}
+	raw := gcm.Seal(nonce, nonce, plain, []byte("PrivRelay-v1"))
+	f, err := os.OpenFile(s.path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err = f.Write(raw); err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(s.path+".tmp", s.path)
+}
