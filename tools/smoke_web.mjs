@@ -25,7 +25,7 @@ const port = reservation.address().port
 await new Promise(resolve => reservation.close(resolve))
 const base = `http://127.0.0.1:${port}`
 const executable = path.join(root, 'artifacts', process.platform === 'win32' ? 'privrelay-server.exe' : 'privrelay-server')
-const server = spawn(executable, ['-listen', `127.0.0.1:${port}`, '-data', path.join(directory, 'store.enc'), '-web', path.join(root, 'web_client/dist')], { windowsHide: true })
+const server = spawn(executable, ['-listen', `127.0.0.1:${port}`, '-data', path.join(directory, 'store.enc'), '-classifier', '', '-web', path.join(root, 'web_client/dist')], { windowsHide: true })
 let output = '', failure
 server.stdout.on('data', chunk => { output += chunk })
 server.on('error', error => { failure = error })
@@ -89,13 +89,43 @@ try {
   assert.equal(restored.restored, true)
   api.setActivePinia(api.createPinia())
   const messages = api.useMessagesStore()
-  messages.upsert(restored)
-  messages.apply(page.messages)
-  assert.equal(messages.byId[id].restored, true, 'a stale poll must not overwrite the newer restore response')
+  await messages.pull()
+  assert.equal(messages.summary.restored, 1)
   messages.$reset()
-  assert.equal(messages.all.length, 0)
+  assert.equal(messages.summary, null)
   assert.equal((await api.listMessages(page.cursor)).messages[0].restored, true)
-  assert.equal((await api.sendFeedback(id, crypto.randomUUID(), 'personal')).status, 'pending_review')
+  const feedbackId = crypto.randomUUID()
+  assert.equal((await api.sendFeedback(id, feedbackId, 'personal')).status, 'pending_review')
+  assert.equal((await api.listFeedback('pending_review')).total, 1)
+  assert.equal((await api.reviewFeedback(feedbackId, 'approved')).review_status, 'approved')
+  assert.equal((await api.sendFeedback(id, feedbackId, 'personal')).status, 'approved', 'a submission retry must preserve review')
+  assert.equal((await api.listFeedback('approved')).counts.pending_review, 0)
+  assert.equal((await api.getStatus()).pending_feedback, 0)
+  assert.equal((await api.getMessage(id)).restored, true)
+  await assert.rejects(api.reviewFeedback(feedbackId, 'rejected'), error => error.status === 409)
+  console.log('PASS review, provenance, pending counts and retry protection')
+  for (let start = 0; start < 104; start += 50) {
+    const batch = Array.from({ length: Math.min(50, 104 - start) }, (_, n) => ({
+      message_id: crypto.randomUUID(), sender: 'SEARCH', body: `Synthetic paging ${start + n}`,
+      received_at: Date.now() + start + n, subscription_id: 1, slot: 0,
+    }))
+    const response = await realFetch(`${base}/api/v1/messages/sync`, { method: 'POST',
+      headers: { Authorization: `Bearer ${phone.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: batch }),
+    })
+    assert.equal(response.status, 200)
+  }
+  const search = await api.searchMessages({ q: 'Synthetic paging', device_id: phone.device_id, limit: 50 })
+  const second = await api.searchMessages({ q: 'Synthetic paging', offset: 50, limit: 50 })
+  const third = await api.searchMessages({ q: 'Synthetic paging', offset: 100, limit: 50 })
+  assert.equal(search.total, 104)
+  assert.equal(second.messages.length, 50)
+  assert.equal(third.messages.length, 4)
+  assert.equal(third.has_more, false)
+  assert.equal(new Set([...search.messages, ...second.messages, ...third.messages].map(m => m.message_id)).size, 104)
+  assert.equal((await api.searchMessages({ q: 'no-such-synthetic-message' })).total, 0)
+  assert.equal((await api.getStatus()).messages, 105)
+  console.log('PASS complete server search and pagination across 105 synthetic messages')
   await api.revokeDevice(phone.device_id)
   assert.equal((await api.listDevices()).find(d => d.device_id === phone.device_id).active, false)
   console.log('PASS phone upload, frontend list, rules, restore, feedback and revoke')

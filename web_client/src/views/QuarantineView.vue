@@ -11,7 +11,7 @@
     <div class="stat-grid">
       <div class="stat-card">
         <div class="stat-label">拦截总数</div>
-        <div class="stat-value">{{ messages.quarantined.length }}</div>
+        <div class="stat-value">{{ messages.summary?.quarantined ?? '—' }}</div>
         <div class="stat-hint">当前处于隔离状态的短信</div>
       </div>
       <div class="stat-card">
@@ -37,17 +37,25 @@
         </template>
       </el-input>
       <span class="toolbar-spacer" />
-      <span class="muted">共 {{ filtered.length }} 条</span>
+      <span class="muted">共 {{ total }} 条</span>
     </div>
 
+    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon style="margin-bottom: 14px">
+      <el-button size="small" @click="reload">重试</el-button>
+    </el-alert>
     <MessageTable
-      :rows="filtered"
-      :loading="messages.loading && !messages.loaded"
+      :rows="rows"
+      :loading="loading"
       show-restore
       empty-text="拦截箱是空的 —— 没有被隔离的短信"
       @select="openDetail"
       @restore="onRestore"
     />
+
+    <div class="toolbar" style="margin-top: 14px; justify-content: flex-end">
+      <el-pagination v-model:current-page="page" v-model:page-size="pageSize" :total="total"
+        :page-sizes="[20, 50]" layout="total, sizes, prev, pager, next" background />
+    </div>
 
     <MessageDetailDrawer
       v-model="drawerVisible"
@@ -68,31 +76,13 @@ import MessageDetailDrawer from '../components/MessageDetailDrawer.vue'
 import MessageTable from '../components/MessageTable.vue'
 import { errorText } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
+import { useMessageSearch } from '../composables/useMessageSearch'
 import { uuid } from '../utils/uuid'
 
 const messages = useMessagesStore()
-const keyword = ref('')
-
-const restoredCount = computed(() => messages.all.filter((m) => m.restored).length)
-
-const reasonStats = computed<Record<string, number>>(() => {
-  const stats: Record<string, number> = {}
-  for (const message of messages.quarantined) {
-    stats[message.reason] = (stats[message.reason] ?? 0) + 1
-  }
-  return stats
-})
-
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  if (!kw) {
-    return messages.quarantined
-  }
-  return messages.quarantined.filter(
-    (message) =>
-      message.sender.toLowerCase().includes(kw) || message.body.toLowerCase().includes(kw),
-  )
-})
+const { keyword, page, pageSize, rows, total, loading, error, reload } = useMessageSearch('quarantine')
+const restoredCount = computed(() => messages.summary?.restored ?? '—')
+const reasonStats = computed(() => messages.summary?.quarantine_reasons ?? {})
 
 const drawerVisible = ref(false)
 const detail = ref<Message | null>(null)
@@ -105,7 +95,8 @@ function openDetail(message: Message): void {
 async function onRestore(message: Message): Promise<void> {
   try {
     const updated = await restoreMessage(message.message_id, uuid())
-    messages.upsert(updated)
+    void messages.pull().catch(() => {})
+    await reload()
     if (detail.value?.message_id === updated.message_id) {
       detail.value = updated
     }
@@ -121,6 +112,7 @@ async function onFeedback(category: string): Promise<void> {
   }
   try {
     await sendFeedback(detail.value.message_id, uuid(), category)
+    void messages.pull().catch(() => {})
     ElMessage.success('纠错已提交至待审核队列，不会直接改变当前分类')
   } catch (error) {
     ElMessage.error(error instanceof ApiError ? errorText(error.code) : '提交失败')

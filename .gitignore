@@ -9,3 +9,4 @@ server/data/
 .kotlin/
 web/node_modules/
 web/dist/
+**/*.egg-info/

@@ -13,24 +13,28 @@ const WS_RETRY_MS = 30000
 const status = ref<SyncStatus>('off')
 const lastSyncAt = ref<number | null>(null)
 
+let generation = 0
 let started = false
 let refreshing = false
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let wsRetryTimer: ReturnType<typeof setTimeout> | null = null
 let socket: WebSocket | null = null
 
-async function refresh(maxPages = 1): Promise<void> {
+async function refresh(): Promise<void> {
   if (refreshing) {
     return
   }
   refreshing = true
+  const request = generation
   const auth = useAuthStore()
   const messages = useMessagesStore()
   const logs = useLogsStore()
   try {
-    await messages.pull(maxPages)
+    await messages.pull()
+    if (request !== generation) return
     lastSyncAt.value = messages.lastSyncAt
   } catch (error) {
+    if (request !== generation) return
     if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
       logs.push('error', '访问令牌失效，需要重新配对本浏览器')
       messages.$reset()
@@ -82,12 +86,12 @@ function connectWs(): void {
   candidate.onopen = () => {
     if (socket !== candidate) return
     status.value = 'live'
-    void refresh(400)
+    void refresh()
   }
   candidate.onmessage = (event) => {
     if (socket !== candidate) return
     if (typeof event.data === 'string' && event.data.includes('changed')) {
-      void refresh(2)
+      void refresh()
     }
   }
   candidate.onerror = () => {
@@ -103,7 +107,7 @@ function connectWs(): void {
 
 function onVisibilityChange(): void {
   if (document.visibilityState === 'visible' && started) {
-    void refresh(1)
+    void refresh()
   }
 }
 
@@ -115,13 +119,15 @@ export function useSync() {
     started = true
     document.addEventListener('visibilitychange', onVisibilityChange)
     connectWs()
-    pollTimer = setInterval(() => void refresh(1), POLL_INTERVAL_MS)
-    // 冷启动：拉全量历史；WebSocket 不可用时轮询兜底
-    void refresh(400)
+    pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
+    // Only fetch aggregate metadata; each view queries its visible page.
+    void refresh()
   }
 
   function stop(): void {
+    generation++
     started = false
+    lastSyncAt.value = null
     status.value = 'off'
     if (pollTimer) {
       clearInterval(pollTimer)

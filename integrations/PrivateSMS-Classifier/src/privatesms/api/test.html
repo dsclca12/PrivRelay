@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PrivateSMS 模型测试</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #10151d; color: #e8eef7; display: grid; place-items: center; }
+    main { width: min(760px, calc(100% - 32px)); padding: 28px; box-sizing: border-box; }
+    h1 { margin: 0 0 8px; font-size: 25px; }
+    p { color: #aab6c7; line-height: 1.6; }
+    textarea { width: 100%; min-height: 180px; box-sizing: border-box; border: 1px solid #354254; border-radius: 12px; padding: 14px; background: #171f2a; color: #f3f6fb; font: inherit; resize: vertical; }
+    button { margin-top: 12px; padding: 11px 18px; border: 0; border-radius: 9px; color: #07121c; background: #70d7bd; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #result { margin-top: 20px; border: 1px solid #354254; border-radius: 12px; padding: 16px; background: #171f2a; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .muted { font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PrivateSMS 模型测试</h1>
+    <p>输入一条短信，查看七类预览模型的分类结果。结果包含 personal、otp、service、transaction、marketing、suspicious、uncertain；短信只发送到本机 PrivateSMS API，不会在此页面保存。</p>
+    <textarea id="sms" maxlength="4096" placeholder="在这里粘贴或输入短信内容"></textarea>
+    <div><button id="submit">分析短信</button></div>
+    <section id="result" aria-live="polite" hidden></section>
+    <p class="muted">这是预览模型，验证集为 AI 生成短信，不能代表真实短信准确率。当前所有结果都要求人工复核，不用于自动拦截。</p>
+  </main>
+  <script>
+    const input = document.querySelector('#sms');
+    const button = document.querySelector('#submit');
+    const output = document.querySelector('#result');
+    button.addEventListener('click', async () => {
+      const text = input.value.trim();
+      if (!text) { output.hidden = false; output.textContent = '请先输入短信内容。'; return; }
+      button.disabled = true;
+      output.hidden = false;
+      output.textContent = '正在分析…';
+      try {
+        const response = await fetch('/api/v1/classify', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail?.[0]?.msg || data.detail || `HTTP ${response.status}`);
+        output.textContent = [
+          `风险判断：${data.is_spam ? '垃圾/风险短信' : '未判为垃圾'}`,
+          `风险分数：${(data.spam_score * 100).toFixed(1)}%`,
+          `类别：${data.category}`,
+          `置信度：${(data.confidence * 100).toFixed(1)}%（未验证自然短信校准）`,
+          `建议人工复核：是`,
+          `模型版本：${data.model_version}`
+        ].join('\n');
+      } catch (error) {
+        output.textContent = `请求失败：${error.message}`;
+      } finally { button.disabled = false; }
+    });
+  </script>
+</body>
+</html>

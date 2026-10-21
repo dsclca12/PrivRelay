@@ -170,6 +170,10 @@ func (s *Server) handler() http.Handler {
 			s.messageDetail(w, r)
 		case path == "/api/v1/status" && r.Method == "GET":
 			s.status(w, r)
+		case path == "/api/v1/feedback" && r.Method == "GET":
+			s.listFeedback(w, r)
+		case strings.HasPrefix(path, "/api/v1/feedback/") && r.Method == "PUT":
+			s.reviewFeedback(w, r, d)
 		case strings.HasPrefix(path, "/api/v1/messages/") && r.Method == "POST":
 			s.operation(w, r)
 		case path == "/api/v1/filter/rules" && r.Method == "GET":
@@ -320,10 +324,14 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 				c, ok = s.classifyContext(classificationContext, m)
 				classifierAvailable = ok
 			}
-			m = applyPolicy(m, c, ok, s.store.Rules)
-			s.store.Revision++
-			m.Revision = s.store.Revision
-			s.store.Messages[m.ID] = m
+			// A retry during an upstream outage is still an ACK of the same
+			// durable message, not a new revision or a reversal of user restore.
+			if !exists || ok {
+				m = applyPolicy(m, c, ok, s.store.Rules)
+				s.store.Revision++
+				m.Revision = s.store.Revision
+				s.store.Messages[m.ID] = m
+			}
 		}
 		// ACK the caller's id while preserving server identity for subsequent pulls.
 		ack := m
@@ -392,6 +400,10 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 	before := s.snapshot()
 	switch parts[1] {
 	case "restore":
+		if m.Restored && m.Action == "allow" && m.Reason == "用户恢复" {
+			writeJSON(w, 200, m)
+			return
+		}
 		m.Action = "allow"
 		m.Reason = "用户恢复"
 		m.Restored = true
@@ -407,13 +419,18 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 422, map[string]string{"error": "category"})
 			return
 		}
-		if old, exists := s.store.Feedback[req.ID]; exists && (old.MessageID != m.ID || old.Category != req.Category) {
-			writeJSON(w, 409, map[string]string{"error": "operation_conflict"})
+		if old, exists := s.store.Feedback[req.ID]; exists {
+			if old.MessageID != m.ID || old.Category != req.Category {
+				writeJSON(w, 409, map[string]string{"error": "operation_conflict"})
+				return
+			}
+			writeJSON(w, 200, map[string]string{"status": old.Status})
 			return
 		}
-		s.store.Feedback[req.ID] = Feedback{ID: req.ID, MessageID: m.ID, Category: req.Category, Status: "pending_review"}
+		s.store.Feedback[req.ID] = Feedback{ID: req.ID, MessageID: m.ID, Category: req.Category, Status: "pending_review", Predicted: m.Category, Model: m.Model}
 		if s.commit(w, before) {
 			writeJSON(w, 200, map[string]string{"status": "pending_review"})
+			s.broadcast()
 		}
 	default:
 		http.NotFound(w, r)

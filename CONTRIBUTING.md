@@ -51,6 +51,10 @@ Set-Location android
 
 仅验证消息契约时可在 `android_client/` 执行 `flutter test test/backend_contract_test.dart test/data_test.dart`。数据或生成模型变化后检查生成文件是否同步。
 
+### Web 控制台
+
+仓库根目录运行 `npm test --prefix web_client` 与 `npm run build --prefix web_client`。状态测试无需浏览器或分类器，覆盖搜索分页、乱序请求和会话清理；真实 Go 进程冒烟、浏览器与构建说明见 [Web 验证](web_client/README.md#验证)。
+
 ### 设备与真实分类链路
 
 [Android 初测](docs/ANDROID_MVP.md#android-初测)包含设备集成测试命令和副作用。测试使用 dev 应用、会覆盖调试包并撤销测试设备；使用独立测试服务和合成数据，测试后重新安装主程序。不要以测试运行器代替交付 APK。
@@ -58,6 +62,10 @@ Set-Location android
 [后端冒烟测试](docs/BACKEND_SMOKE_TEST.md#复跑)说明 Windows exe 的构建、分类器前置条件及报告位置。冒烟脚本创建独立密文库，不使用正式消息库。
 
 单元测试、构建成功、合成注入、系统广播、真实运营商来信是不同级别的证据；报告中明确实际验证到哪一层。
+
+### 非 Android 全面测试
+
+先按[集成说明](docs/CLASSIFIER_INTEGRATION.md)准备 Python 环境，然后从根目录运行 `./tools/test-all.ps1`。统一入口包含 Go 竞态和覆盖率、Web、原版模型真实进程、500 条消息负载与恢复、源码校验和上游单元测试，不运行 Flutter、Gradle、ADB 或 Android 设备测试。上游 Windows 平台失败不会被隐藏，统一入口因此可能返回非零；结果及跳过项写入 `artifacts/non-android-tests-*/report.json`。依赖安全扫描与浏览器交互证据见[非 Android 报告](docs/NON_ANDROID_TEST_REPORT.md)。
 
 ## 提交变更
 

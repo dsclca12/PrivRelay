@@ -17,6 +17,28 @@ export function listMessages(cursor: number, limit = 50): Promise<MessagesPage> 
   return apiFetch<MessagesPage>(`/api/v1/messages?cursor=${cursor}&limit=${limit}`)
 }
 
+export interface MessageSearch {
+  q?: string
+  category?: string
+  action?: string
+  device_id?: string
+  offset?: number
+  limit?: number
+}
+export interface SearchPage {
+  messages: Message[]
+  total: number
+  offset: number
+  has_more: boolean
+}
+export function searchMessages(query: MessageSearch): Promise<SearchPage> {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value))
+  }
+  return apiFetch(`/api/v1/messages/search?${params}`)
+}
+
 export function restoreMessage(messageId: string, operationId: string): Promise<Message> {
   return apiFetch<Message>(`/api/v1/messages/${encodeURIComponent(messageId)}/restore`, {
     method: 'POST',
@@ -80,6 +102,8 @@ export function getPairingStatus(): Promise<{ active: boolean; expires_at: numbe
 export interface ServerStatus {
   messages: number
   quarantined: number
+  restored: number
+  quarantine_reasons: Record<string, number>
   pending_classification: number
   authorized_devices: number
   connected_devices: number
@@ -88,4 +112,33 @@ export interface ServerStatus {
 }
 export function getStatus(): Promise<ServerStatus> {
   return apiFetch('/api/v1/status')
+}
+
+export type ReviewStatus = 'pending_review' | 'approved' | 'rejected'
+export interface Feedback {
+  operation_id: string
+  message_id: string
+  corrected_category: string
+  predicted_category?: string
+  model_version?: string
+  review_status: ReviewStatus
+  reviewed_by?: string
+  reviewed_at?: number
+}
+export interface FeedbackPage {
+  feedback: Feedback[]
+  total: number
+  counts: Record<ReviewStatus, number>
+  corrections: Record<string, number>
+}
+export function listFeedback(status = '', offset = 0, limit = 20): Promise<FeedbackPage> {
+  return apiFetch(`/api/v1/feedback?${new URLSearchParams({ status, offset: String(offset), limit: String(limit) })}`)
+}
+export function reviewFeedback(id: string, status: 'approved' | 'rejected'): Promise<Feedback> {
+  return apiFetch(`/api/v1/feedback/${encodeURIComponent(id)}`, {
+    method: 'PUT', body: { review_status: status },
+  })
+}
+export function getMessage(id: string): Promise<Message> {
+  return apiFetch(`/api/v1/messages/${encodeURIComponent(id)}`)
 }

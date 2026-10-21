@@ -5,7 +5,7 @@ services:
     ports:
       - "127.0.0.1:8787:8787"
     environment:
-      CLASSIFIER_URL: ${CLASSIFIER_URL:-}
+      CLASSIFIER_URL: ${CLASSIFIER_URL:-http://classifier:8000}
       CLASSIFIER_API_KEY: ${CLASSIFIER_API_KEY:-}
     volumes:
       - relay-data:/data
@@ -14,5 +14,32 @@ services:
     cap_drop:
       - ALL
     read_only: true
+    depends_on:
+      classifier:
+        condition: service_healthy
+  classifier:
+    build:
+      context: .
+      dockerfile: integrations/classifier.Dockerfile
+    restart: unless-stopped
+    environment:
+      PRIVATESMS_API_KEY: ${CLASSIFIER_API_KEY:-}
+      PRIVATESMS_DECISION_THRESHOLD: ${PRIVATESMS_DECISION_THRESHOLD:-}
+    volumes:
+      - classifier-feedback:/app/feedback
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 volumes:
   relay-data:
+  classifier-feedback:

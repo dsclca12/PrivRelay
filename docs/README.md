@@ -9,6 +9,7 @@
 | 文档 | 内容 |
 |---|---|
 | [Android MVP](ANDROID_MVP.md) | 使用、实现闭环、构建、签名与平台限制 |
+| [原版分类器集成](CLASSIFIER_INTEGRATION.md) | 普通源码快照、真实评分接口、启动及阈值语义 |
 | [部署指南](DEPLOYMENT.md) | Go / Docker 启动、配置、分类器、HTTPS、备份与排障 |
 | [后端 API](BACKEND_API.md) | 配对签名、认证、请求响应、同步语义与错误处理 |
 | [开发与贡献指南](../CONTRIBUTING.md) | 环境、验证命令、变更要求与文档规范 |
@@ -18,12 +19,14 @@
 
 | 文档 | 阅读方式 |
 |---|---|
+| [完成情况与后续工作](COMPLETION_STATUS.md) | 2026-10-21 本轮补齐、验证范围与仍待完成事项 |
 | [项目立项与技术设计](PROJECT_DESIGN.md) | 完整设计、架构、阶段计划及验收目标；未实现能力不属于当前交付 |
 
 ## 历史测试证据
 
 | 报告 | 日期 | 范围 |
 |---|---|---|
+| [非 Android 全面测试](NON_ANDROID_TEST_REPORT.md) | 2026-10-21 | 原版 INT8 分类器、鉴权、500 条并发上传、故障恢复、Go/Web、上游平台限制与依赖审计 |
 | [Android MVP 初步测试](ANDROID_TEST_REPORT.md) | 2026-10-21 | OPPO 真机合成注入闭环、模拟器系统短信广播与后台恢复 |
 | [后端自动化验证](BACKEND_VALIDATION.md) | 2026-10-21 | 后端单元、竞态、静态检查与客户端契约验证 |
 | [后端真实进程冒烟测试](BACKEND_SMOKE_TEST.md) | 2026-10-21 | 隔离后端、真实 ONNX 分类器和合成短信链路 |

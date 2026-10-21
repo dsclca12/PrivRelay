@@ -3,8 +3,10 @@
  * 让前端在没有 Go 服务与分类服务的情况下可以完整走通所有页面。
  */
 import type { Device, Message, Rules } from './types'
+import type { Feedback } from './endpoints'
 
 interface MockState {
+  feedback: Feedback[]
   messages: Message[]
   devices: Device[]
   rules: Rules
@@ -226,7 +228,7 @@ function initialState(): MockState {
     blacklist: ['10690005555'],
   }
 
-  return { messages, devices, rules, revision: 14 }
+  return { feedback: [], messages, devices, rules, revision: 14 }
 }
 
 let state: MockState | null = null
@@ -278,10 +280,56 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
     return { active: expires * 1000 > Date.now(), expires_at: expires } as T
   }
   if (url.pathname === '/api/v1/status') {
-    return { messages: s.messages.length, quarantined: s.messages.filter(m => m.action === 'quarantine').length, pending_classification: 0, authorized_devices: s.devices.filter(d => d.active).length, connected_devices: 0, pending_feedback: 0, revision: s.revision } as T
+    return { messages: s.messages.length, quarantined: s.messages.filter(m => m.action === 'quarantine').length, restored: s.messages.filter(m => m.restored).length, quarantine_reasons: Object.fromEntries([...new Set(s.messages.filter(m => m.action === 'quarantine').map(m => m.reason))].map(reason => [reason, s.messages.filter(m => m.action === 'quarantine' && m.reason === reason).length])), pending_classification: s.messages.filter(m => !m.classified).length, authorized_devices: s.devices.filter(d => d.active).length, connected_devices: 0, pending_feedback: s.feedback.filter(f => f.review_status === 'pending_review').length, revision: s.revision } as T
   }
   if (url.pathname === '/healthz') {
     return { status: 'ok', classifier: 'ok' } as T
+  }
+
+  if (url.pathname === '/api/v1/messages/search' && method === 'GET') {
+    const q = (url.searchParams.get('q') ?? '').toLowerCase()
+    const category = url.searchParams.get('category')
+    const action = url.searchParams.get('action')
+    const device = url.searchParams.get('device_id')
+    const offset = Number(url.searchParams.get('offset') ?? 0)
+    const limit = Number(url.searchParams.get('limit') ?? 20)
+    const rows = s.messages.filter(m => (!category || m.category === category) && (!action || m.action === action) &&
+      (!device || m.device_id === device) && (!q || m.sender.toLowerCase().includes(q) || m.body.toLowerCase().includes(q)))
+      .sort((a, b) => b.received_at - a.received_at || a.message_id.localeCompare(b.message_id))
+    return clone({ messages: rows.slice(offset, offset + limit), total: rows.length, offset, has_more: offset + limit < rows.length }) as T
+  }
+  if (url.pathname === '/api/v1/feedback' && method === 'GET') {
+    const status = url.searchParams.get('status')
+    const offset = Number(url.searchParams.get('offset') ?? 0)
+    const limit = Number(url.searchParams.get('limit') ?? 20)
+    const rows = s.feedback.filter(f => !status || f.review_status === status).sort((a, b) => a.operation_id.localeCompare(b.operation_id))
+    const counts = { pending_review: 0, approved: 0, rejected: 0 }
+    const corrections: Record<string, number> = {}
+    for (const f of s.feedback) {
+      counts[f.review_status]++
+      if (f.review_status === 'approved') {
+        const key = `${f.predicted_category}→${f.corrected_category}`
+        corrections[key] = (corrections[key] ?? 0) + 1
+      }
+    }
+    return clone({ feedback: rows.slice(offset, offset + limit), total: rows.length, counts, corrections }) as T
+  }
+  const reviewMatch = url.pathname.match(/^\/api\/v1\/feedback\/([^/]+)$/)
+  if (reviewMatch && method === 'PUT') {
+    const f = s.feedback.find(f => f.operation_id === decodeURIComponent(reviewMatch[1]!))
+    if (!f) notFound()
+    const status = (body as { review_status: 'approved' | 'rejected' }).review_status
+    if (f.review_status !== 'pending_review' && f.review_status !== status) throw new Error('operation_conflict')
+    f.review_status = status
+    f.reviewed_by = 'demo-pixel8-7f21c4a9'
+    f.reviewed_at ??= Math.floor(Date.now() / 1000)
+    return clone(f) as T
+  }
+  const detailMatch = url.pathname.match(/^\/api\/v1\/messages\/([^/]+)$/)
+  if (detailMatch && method === 'GET') {
+    const target = s.messages.find(m => m.message_id === decodeURIComponent(detailMatch[1]!))
+    if (!target) notFound()
+    return clone(target) as T
   }
 
   if (url.pathname === '/api/v1/messages' && method === 'GET') {
@@ -309,6 +357,13 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
 
   const feedbackMatch = url.pathname.match(/^\/api\/v1\/messages\/([^/]+)\/feedback$/)
   if (feedbackMatch && method === 'POST') {
+    const input = body as { operation_id: string; corrected_category: string }
+    const existing = s.feedback.find(f => f.operation_id === input.operation_id)
+    if (existing) return { status: existing.review_status } as T
+    const message = s.messages.find(m => m.message_id === decodeURIComponent(feedbackMatch[1]!))
+    if (!message) notFound()
+    s.feedback.push({ ...input, message_id: message.message_id, predicted_category: message.category,
+      model_version: message.model_version, review_status: 'pending_review' })
     return { status: 'pending_review' } as T
   }
 

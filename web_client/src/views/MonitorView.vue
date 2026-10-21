@@ -31,14 +31,14 @@
 
       <div class="stat-card">
         <div class="stat-label">消息总数</div>
-        <div class="stat-value">{{ serverStatus?.messages ?? messages.all.length }}</div>
-        <div class="stat-hint">服务端修订号 {{ serverStatus?.revision ?? messages.cursor }}</div>
+        <div class="stat-value">{{ serverStatus?.messages ?? '—' }}</div>
+        <div class="stat-hint">服务端修订号 {{ serverStatus?.revision ?? '—' }}</div>
       </div>
 
       <div class="stat-card">
         <div class="stat-label">拦截 / 已恢复</div>
         <div class="stat-value">
-          {{ serverStatus?.quarantined ?? messages.quarantined.length }} / {{ restoredCount }}
+          {{ serverStatus?.quarantined ?? '—' }} / {{ restoredCount }}
         </div>
         <div class="stat-hint">拦截均可恢复，首版不执行删除</div>
       </div>
@@ -99,10 +99,8 @@ import type { ServerStatus } from '../api/endpoints'
 import type { Device, Health } from '../api/types'
 import { useSync } from '../composables/useSync'
 import { useLogsStore } from '../stores/logs'
-import { useMessagesStore } from '../stores/messages'
 import { formatClock, formatDateTime } from '../utils/format'
 
-const messages = useMessagesStore()
 const logs = useLogsStore()
 const { status: syncStatus, lastSyncAt } = useSync()
 
@@ -111,7 +109,7 @@ const serverStatus = ref<ServerStatus | null>(null)
 const devices = ref<Device[]>([])
 let timer: ReturnType<typeof setInterval> | null = null
 
-const restoredCount = computed(() => messages.all.filter((m) => m.restored).length)
+const restoredCount = computed(() => serverStatus.value?.restored ?? '—')
 const deviceCount = computed(
   () => devices.value.filter((d) => d.active && d.expires_at * 1000 > Date.now()).length,
 )

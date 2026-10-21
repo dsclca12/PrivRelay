@@ -90,6 +90,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       cache: 'no-store',
       credentials: 'same-origin',
+      signal: AbortSignal.timeout(15000),
     })
   } catch {
     throw new ApiError(0, 'network_error')

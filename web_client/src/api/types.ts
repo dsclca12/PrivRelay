@@ -21,6 +21,9 @@ export interface Message {
   revision: number
   classified: boolean
   restored: boolean
+  classifier_action?: 'allow' | 'block'
+  classifier_reason?: string
+  classifier_threshold?: number
 }
 
 export interface Device {

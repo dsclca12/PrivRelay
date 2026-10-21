@@ -2,7 +2,7 @@
 
 [项目首页](../README.md) · [文档索引](README.md) · [后端 API](BACKEND_API.md)
 
-本指南对应单用户、单进程 Go 服务。当前使用 AES-GCM 加密文件快照，不需要 PostgreSQL；不能让多个进程同时写入同一数据文件。Web 页面尚未交付，可选静态目录托管不会自动生成管理台。
+本指南对应单用户、单进程 Go 服务。当前使用 AES-GCM 加密文件快照，不需要 PostgreSQL；不能让多个进程同时写入同一数据文件。Web 控制台已实现，可通过根目录 `./tools/start.ps1` 一起构建启动，或使用 Docker Compose 同源托管。
 
 ## 本机启动
 
@@ -26,7 +26,7 @@ go run . -listen 127.0.0.1:8787 -data data/privrelay.enc
 
 ## 接入分类器
 
-独立部署 [PrivateSMS-Classifier](https://github.com/dsclca12/PrivateSMS-Classifier)，准备其 `/healthz` 和 `/api/v1/classify`。本仓库不包含模型或模型训练环境。已有分类器监听本机 8000 时，在 `server/` 启动：
+已在 `integrations/PrivateSMS-Classifier/` 以普通源码目录接入 [PrivateSMS-Classifier](https://github.com/dsclca12/PrivateSMS-Classifier)，包含公开 INT8 模型，无子模块或嵌套 Git。详细来源、接口和阈值语义见[分类器集成](CLASSIFIER_INTEGRATION.md)。服务必须同时提供 `/healthz`、`/api/v1/classify` 和 `/sms/score`。已有分类器监听本机 8000 时，在 `server/` 启动：
 
 ```powershell
 go run . -listen 127.0.0.1:8787 -data data/privrelay.enc -classifier http://127.0.0.1:8000
@@ -34,7 +34,7 @@ go run . -listen 127.0.0.1:8787 -data data/privrelay.enc -classifier http://127.
 
 省略分类器或上游不可用时，后端仍保存并 ACK 原始短信，每分钟重试未完成分类。保留上游未校准和需复核标志，不因分数达到阈值而绕过模型限制。
 
-Windows 初测可使用 `tools/windows_classifier.py`：需事先安装上游 `privatesms` 包及脚本导入的依赖，将 `PRIVATESMS_MODEL_PATH` 指向有效模型。该入口仅监听 `127.0.0.1:18788`、不提供反馈接口，属于本地验证工具。常规托管使用上游 Linux 容器，具体依赖安装按上游说明。
+Windows 执行 `./tools/start-classifier.ps1`（仓库根目录），脚本创建隔离环境、安装 `requirements/classifier-runtime.txt` 并运行上游原版 ASGI 应用。需要支持 `os.fchmod` 的 Python 3.13+，本轮测试为 3.14。`tools/windows_classifier.py` 现在只负责配置和启动，不再实现精简替代 API。完整鉴权、评分和反馈路由均来自上游。首次安装需要网络，模型推理默认离线。上游反馈接口只有配置 API key 后才启用；Windows 的 POSIX 权限断言不能代替 ACL 检查，详见测试报告。
 
 ## Docker Compose
 
@@ -45,9 +45,9 @@ docker compose up --build -d
 docker compose logs server
 ```
 
-`compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY`；可使用本机环境变量或被忽略的根目录 `.env` 配置。
+`compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`；`classifier-feedback` 为上游反馈库提供独立持久化位置（可能含明文样本，需保护卷访问）。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY`；可使用本机环境变量或被忽略的根目录 `.env` 配置。
 
-容器中的 `127.0.0.1` 指向容器本身；分类器地址应使用容器可达的服务名或宿主机地址。本 Compose 构建 Web 控制台并由 Go 同源托管，不启动分类器或反向代理。现有历史报告未覆盖 Docker 实跑，部署后需检查容器日志、卷权限和健康接口。
+容器中的 `127.0.0.1` 指向容器本身；分类器地址应使用容器可达的服务名或宿主机地址。本 Compose 构建 Web 控制台并由 Go 同源托管，同时在内部网络启动 classifier 服务，不对宿主机暴露分类器端口；不启动 HTTPS 反向代理。默认 CLASSIFIER_URL 为 http://classifier:8000。本轮环境没有 Docker，容器镜像和运行尚未实测，部署后需检查容器日志、卷权限和健康接口。
 
 更新镜像可再次执行 `docker compose up --build -d`。不要使用 `docker compose down -v` 停机，该命令会删除保存运行数据的卷。
 

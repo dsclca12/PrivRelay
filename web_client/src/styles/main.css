@@ -28,6 +28,10 @@ body {
   height: 100%;
 }
 
+.app-layout > .el-container {
+  min-width: 0;
+}
+
 .app-sidebar {
   border-right: 1px solid var(--el-border-color-lighter);
   background: var(--el-bg-color-overlay);
@@ -307,6 +311,23 @@ body {
 
 .privacy-notes {
   padding-left: 4px;
+}
+
+.login-page {
+  box-sizing: border-box;
+}
+
+@media (max-width: 900px) {
+  .sync-line { display: none; }
+  .app-header { gap: 6px; padding: 0 8px; }
+  .app-header .el-button + .el-button { margin-left: 0; }
+  .refresh-label { display: none; }
+  .app-main { padding: 12px 8px; min-width: 0; }
+  .toolbar > .el-input { max-width: 100%; }
+  .el-pagination { max-width: 100%; overflow-x: auto; }
+  .el-message-box { max-width: calc(100vw - 24px); }
+  .el-table__empty-text { width: 100%; padding: 12px; box-sizing: border-box; }
+  .stat-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ===== 规则页 ===== */

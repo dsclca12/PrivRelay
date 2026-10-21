@@ -29,22 +29,15 @@
 
       <span class="toolbar-spacer" />
 
-      <span class="muted">
-        共 {{ filtered.length }} 条 / 全部 {{ messages.all.length }} 条
-      </span>
-      <el-button
-        v-if="messages.hasMore"
-        :loading="messages.loading"
-        size="small"
-        @click="() => messages.pull(400)"
-      >
-        加载更多历史
-      </el-button>
+      <span class="muted">共 {{ total }} 条</span>
     </div>
 
+    <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon style="margin-bottom: 14px">
+      <el-button size="small" @click="reload">重试</el-button>
+    </el-alert>
     <MessageTable
-      :rows="paged"
-      :loading="messages.loading && !messages.loaded"
+      :rows="rows"
+      :loading="loading"
       empty-text="没有符合条件的消息"
       @select="openDetail"
       @restore="onRestore"
@@ -54,8 +47,8 @@
       <el-pagination
         v-model:current-page="page"
         v-model:page-size="pageSize"
-        :total="filtered.length"
-        :page-sizes="[20, 50, 100]"
+        :total="total"
+        :page-sizes="[20, 50]"
         layout="total, sizes, prev, pager, next"
         background
       />
@@ -72,7 +65,7 @@
 
 <script setup lang="ts">
 import { ElMessage } from 'element-plus'
-import { computed, ref, watch } from 'vue'
+import { ref } from 'vue'
 import { ApiError } from '../api/client'
 import { restoreMessage, sendFeedback } from '../api/endpoints'
 import type { Message } from '../api/types'
@@ -80,45 +73,13 @@ import MessageDetailDrawer from '../components/MessageDetailDrawer.vue'
 import MessageTable from '../components/MessageTable.vue'
 import { errorText } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
+import { useMessageSearch } from '../composables/useMessageSearch'
 import { CATEGORY_OPTIONS } from '../utils/format'
 import { uuid } from '../utils/uuid'
 
 const messages = useMessagesStore()
 
-const keyword = ref('')
-const categoryFilter = ref('')
-const actionFilter = ref('')
-const page = ref(1)
-const pageSize = ref(20)
-
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return messages.all.filter((message) => {
-    if (categoryFilter.value && message.category !== categoryFilter.value) {
-      return false
-    }
-    if (actionFilter.value && message.action !== actionFilter.value) {
-      return false
-    }
-    if (
-      kw &&
-      !message.sender.toLowerCase().includes(kw) &&
-      !message.body.toLowerCase().includes(kw)
-    ) {
-      return false
-    }
-    return true
-  })
-})
-
-const paged = computed(() => {
-  const start = (page.value - 1) * pageSize.value
-  return filtered.value.slice(start, start + pageSize.value)
-})
-
-watch([keyword, categoryFilter, actionFilter], () => {
-  page.value = 1
-})
+const { keyword, categoryFilter, actionFilter, page, pageSize, rows, total, loading, error, reload } = useMessageSearch()
 
 const drawerVisible = ref(false)
 const detail = ref<Message | null>(null)
@@ -131,7 +92,8 @@ function openDetail(message: Message): void {
 async function onRestore(message: Message): Promise<void> {
   try {
     const updated = await restoreMessage(message.message_id, uuid())
-    messages.upsert(updated)
+    void messages.pull().catch(() => {})
+    await reload()
     if (detail.value?.message_id === updated.message_id) {
       detail.value = updated
     }
@@ -147,6 +109,7 @@ async function onFeedback(category: string): Promise<void> {
   }
   try {
     await sendFeedback(detail.value.message_id, uuid(), category)
+    void messages.pull().catch(() => {})
     ElMessage.success('纠错已提交至待审核队列，不会直接改变当前分类')
   } catch (error) {
     ElMessage.error(error instanceof ApiError ? errorText(error.code) : '提交失败')

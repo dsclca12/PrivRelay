@@ -1,0 +1,9 @@
+PrivateSMS Classifier
+Copyright 2026 the PrivateSMS contributors.
+
+This distribution includes a fine-tuned model based on hfl/rbt3. The upstream
+model is published by the Joint Laboratory of HIT and iFLYTEK Research (HFL)
+under Apache License 2.0: https://huggingface.co/hfl/rbt3
+The fine-tuned checkpoint and tokenizer are distributed under Apache License 2.0.
+
+The training SMS corpus is not included.

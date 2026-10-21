@@ -1,5 +1,5 @@
 <template>
-  <el-drawer v-model="visible" title="短信详情" size="520px">
+  <el-drawer v-model="visible" title="短信详情" size="min(520px, 100vw)">
     <div v-if="message" class="detail-body">
       <div class="toolbar" style="margin-bottom: 4px">
         <el-tag :type="categoryMeta(message.category).tagType" effect="light">
@@ -45,6 +45,15 @@
         <el-descriptions-item label="模型版本">
           {{ message.model_version || '—' }}
         </el-descriptions-item>
+        <el-descriptions-item v-if="message.classifier_action" label="分类器决策">
+          {{ message.classifier_action === 'block' ? '建议隔离' : '正常保留' }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="message.classifier_reason" label="分类器依据">
+          {{ message.classifier_reason }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="message.classifier_threshold !== undefined" label="上游实际阈值">
+          {{ formatPercent(message.classifier_threshold) }}
+        </el-descriptions-item>
       </el-descriptions>
 
       <div class="detail-section-title">消息元数据</div>
@@ -69,6 +78,7 @@
         </el-descriptions-item>
       </el-descriptions>
 
+      <template v-if="allowActions">
       <div class="detail-section-title">操作</div>
       <div class="drawer-actions">
         <el-button
@@ -103,6 +113,7 @@
       <p class="muted" style="margin-top: 8px">
         纠错将进入待审核反馈队列，不会直接修改当前模型的分类结果。
       </p>
+      </template>
     </div>
   </el-drawer>
 </template>
@@ -115,9 +126,10 @@ import { CATEGORY_OPTIONS, actionMeta, categoryMeta, formatDateTime, formatPerce
 interface Props {
   modelValue: boolean
   message: Message | null
+  allowActions?: boolean
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), { allowActions: true })
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]

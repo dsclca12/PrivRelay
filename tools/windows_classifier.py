@@ -1,46 +1,29 @@
-"""Loopback-only inference harness for upstream's Windows fchmod incompatibility.
+"""Run the pinned, unmodified PrivateSMS-Classifier ASGI application.
 
-Uses upstream ONNX loading/predict, preserving calibration/review metadata.
-No feedback endpoints or request persistence. Deploy the upstream Linux container
-for normal hosting. Run with the upstream package and uvicorn installed.
+Windows requires Python 3.13+ (os.fchmod); use tools/start-classifier.ps1.
+Classification, /sms/score, validation and feedback routes are all upstream code.
 """
+import argparse
 import os
-from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
-from privatesms.inference import load_model, predict
-from threadpoolctl import threadpool_limits
+from pathlib import Path
 
 
-@asynccontextmanager
-async def lifespan(app):
-    app.state.bundle = load_model(os.environ["PRIVATESMS_MODEL_PATH"])
-    yield
-    app.state.bundle = None
-
-
-app = FastAPI(lifespan=lifespan)
-
-
-class Request(BaseModel):
-    text: str = Field(min_length=1, max_length=4096)
-    sender: str | None = Field(default=None, max_length=64)
-
-
-@app.get("/healthz")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/api/v1/classify")
-def classify(request: Request):
-    with threadpool_limits(limits=4):
-        result = predict(app.state.bundle, request.text)
-    return {key: result[key] for key in (
-        "category", "confidence", "spam_score", "confidence_calibrated",
-        "needs_review", "model_version", "is_spam")}
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=18788)
+    parser.add_argument("--feedback-db", default="artifacts/classifier/feedback.sqlite3")
+    args = parser.parse_args()
+    if os.name == "nt" and not hasattr(os, "fchmod"):
+        raise SystemExit("Use Python 3.13+ on Windows; upstream requires os.fchmod.")
+    root = Path(__file__).resolve().parents[1]
+    os.environ.setdefault("PRIVATESMS_MODEL_PATH", str(root / "integrations/PrivateSMS-Classifier/models/rbt3-six-class"))
+    os.environ.setdefault("PRIVATESMS_FEEDBACK_DB", str(Path(args.feedback_db).resolve()))
+    os.environ.setdefault("PRIVATESMS_INFERENCE_THREADS", "4")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    import uvicorn
+    uvicorn.run("privatesms.api.app:app", host="127.0.0.1", port=args.port, access_log=False)
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=18788, access_log=False)
+    main()

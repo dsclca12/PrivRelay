@@ -11,23 +11,26 @@ import (
 )
 
 type Message struct {
-	ID           string  `json:"message_id"`
-	Sender       string  `json:"sender"`
-	Body         string  `json:"body"`
-	Received     int64   `json:"received_at"`
-	Subscription int     `json:"subscription_id"`
-	Slot         int     `json:"slot"`
-	Category     string  `json:"category"`
-	Confidence   float64 `json:"confidence"`
-	Risk         float64 `json:"risk"`
-	Review       bool    `json:"needs_review"`
-	Model        string  `json:"model_version"`
-	Action       string  `json:"action"`
-	Reason       string  `json:"reason"`
-	Device       string  `json:"device_id"`
-	Revision     int64   `json:"revision"`
-	Classified   bool    `json:"classified"`
-	Restored     bool    `json:"restored"`
+	ID                  string   `json:"message_id"`
+	Sender              string   `json:"sender"`
+	Body                string   `json:"body"`
+	Received            int64    `json:"received_at"`
+	Subscription        int      `json:"subscription_id"`
+	Slot                int      `json:"slot"`
+	Category            string   `json:"category"`
+	Confidence          float64  `json:"confidence"`
+	Risk                float64  `json:"risk"`
+	Review              bool     `json:"needs_review"`
+	Model               string   `json:"model_version"`
+	Action              string   `json:"action"`
+	Reason              string   `json:"reason"`
+	Device              string   `json:"device_id"`
+	Revision            int64    `json:"revision"`
+	Classified          bool     `json:"classified"`
+	Restored            bool     `json:"restored"`
+	ClassifierAction    string   `json:"classifier_action,omitempty"`
+	ClassifierReason    string   `json:"classifier_reason,omitempty"`
+	ClassifierThreshold *float64 `json:"classifier_threshold,omitempty"`
 }
 type Device struct {
 	ID        string `json:"device_id"`
@@ -44,10 +47,14 @@ type Rules struct {
 	Blacklist []string `json:"blacklist"`
 }
 type Feedback struct {
-	ID        string `json:"operation_id"`
-	MessageID string `json:"message_id"`
-	Category  string `json:"corrected_category"`
-	Status    string `json:"review_status"`
+	ID         string `json:"operation_id"`
+	MessageID  string `json:"message_id"`
+	Category   string `json:"corrected_category"`
+	Status     string `json:"review_status"`
+	Predicted  string `json:"predicted_category,omitempty"`
+	Model      string `json:"model_version,omitempty"`
+	ReviewedBy string `json:"reviewed_by,omitempty"`
+	ReviewedAt int64  `json:"reviewed_at,omitempty"`
 }
 type Store struct {
 	Messages map[string]Message  `json:"messages"`

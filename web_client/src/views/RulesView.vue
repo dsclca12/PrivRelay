@@ -34,7 +34,7 @@
         type="info"
         :closable="false"
         show-icon
-        title="仅分类模式下，阈值与名单仍会保存，但不会隔离任何短信。"
+        title="仅分类模式下，名单仍会保存，但不会隔离任何短信。"
         style="margin-top: 12px"
       />
       <el-alert
@@ -42,28 +42,17 @@
         type="warning"
         :closable="false"
         show-icon
-        title="自动拦截模式在服务端执行与智能过滤相同的隔离策略；系统级通知抑制由 Android 客户端负责。"
+        title="自动拦截与智能过滤均在应用内隔离消息；非默认短信应用无法抑制其他短信应用的通知。"
         style="margin-top: 12px"
       />
     </el-card>
 
     <el-card shadow="never" style="margin-bottom: 14px">
       <template #header>
-        <span style="font-weight: 600">隔离阈值</span>
+        <span style="font-weight: 600">PrivateSMS-Classifier 决策</span>
       </template>
-      <el-slider
-        v-model="form.threshold"
-        :min="0.8"
-        :max="1"
-        :step="0.01"
-        show-input
-        :show-input-width="160"
-        style="max-width: 520px"
-      />
-      <p class="muted" style="margin-top: 6px">
-        仅当模型类别为营销 / 可疑、置信度校准通过且置信度 ≥ 阈值时才会隔离（当前
-        {{ (form.threshold * 100).toFixed(0) }}%）。阈值范围 0.80 – 1.00，建议从 0.95 起步。
-      </p>
+      <p>分类、风险评分和模型拦截决策采用上游的 classify 与 /sms/score 接口。仅上游返回 block 时执行模型隔离。</p>
+      <p class="muted">决策阈值由分类服务的 PRIVATESMS_DECISION_THRESHOLD 或模型配置控制；当前公开模型要求人工复核，不会仅凭分数自动拦截。名单与人工恢复仍可控制应用内展示。</p>
     </el-card>
 
     <el-card shadow="never">
@@ -71,7 +60,7 @@
         <span style="font-weight: 600">白名单与黑名单</span>
       </template>
       <el-form label-position="top">
-        <el-form-item label="白名单：这些发送方永远正常展示（优先于黑名单与阈值）">
+        <el-form-item label="白名单：这些发送方永远正常展示（优先于黑名单与模型决策）">
           <el-input
             v-model="whitelistText"
             type="textarea"
@@ -91,7 +80,7 @@
         </el-form-item>
       </el-form>
       <p class="muted">
-        每行一条，单条 ≤ 128 字符，各列表 ≤ 500 条。当前白名单 {{ whitelistCount }} 条、黑名单
+        每行一条，单条 UTF-8 ≤ 128 字节，各列表 ≤ 500 条。当前白名单 {{ whitelistCount }} 条、黑名单
         {{ blacklistCount }} 条。
       </p>
     </el-card>
@@ -129,7 +118,7 @@ const MODES: ModeOption[] = [
   {
     value: 'block',
     name: '模式 C · 自动拦截',
-    desc: '在智能过滤基础上启用自动隔离；通知抑制由 Android 端配合完成。',
+    desc: '执行上游建议的模型隔离或明确用户名单；隔离消息可随时人工恢复。',
     icon: 'Lock',
   },
 ]
@@ -189,9 +178,9 @@ async function save(): Promise<void> {
     ElMessage.error('单个名单最多 500 条')
     return
   }
-  const tooLong = [...whitelist, ...blacklist].find((entry) => entry.length > 128)
+  const tooLong = [...whitelist, ...blacklist].find((entry) => new TextEncoder().encode(entry).length > 128)
   if (tooLong) {
-    ElMessage.error(`名单条目超过 128 字符：${tooLong.slice(0, 32)}…`)
+    ElMessage.error(`名单条目超过 128 字节：${tooLong.slice(0, 32)}…`)
     return
   }
   if (form.value.threshold < 0.8 || form.value.threshold > 1) {

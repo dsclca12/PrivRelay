@@ -1,0 +1,31 @@
+{
+  "version": "privatesms-rbt3-synthetic-six-class-v1",
+  "model_name": "hfl/rbt3",
+  "base_model": "hfl/rbt3",
+  "classes": [
+    "marketing",
+    "otp",
+    "personal",
+    "service",
+    "suspicious",
+    "transaction"
+  ],
+  "max_length": 128,
+  "decision_threshold": 0.5,
+  "review_confidence_threshold": 0.6,
+  "confidence_calibrated": false,
+  "calibration_method": "temperature_scaling_on_synthetic_validation_only",
+  "calibration_temperature": 1.3506159881222757,
+  "category_decision": "argmax",
+  "abstain_confidence_threshold": 0.6,
+  "always_requires_review": true,
+  "quantization": "dynamic-int8-qint8",
+  "onnx_opset": 17,
+  "onnx_inputs": [
+    "input_ids",
+    "attention_mask",
+    "token_type_ids"
+  ],
+  "training_data_summary": "AI-generated synthetic SMS only; private real SMS, feedback, and non-synthetic corpora were excluded",
+  "base_model_license": "Apache-2.0"
+}

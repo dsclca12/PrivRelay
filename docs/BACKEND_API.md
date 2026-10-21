@@ -44,7 +44,9 @@
 | GET | `/api/v1/messages/{id}` | 单条详情 |
 | GET | `/api/v1/filter/quarantine` | 拦截箱，查询参数与 search 相同，固定 action=quarantine |
 | POST | `/api/v1/messages/{id}/restore` | 恢复，返回完整 Message 并发出变更通知 |
-| POST | `/api/v1/messages/{id}/feedback` | 纠错，返回 `{status:"pending_review"}`，不覆盖模型原始预测 |
+| POST | `/api/v1/messages/{id}/feedback` | 新纠错返回 `{status:"pending_review"}`；重试返回已有审核状态，不覆盖模型原始预测 |
+| GET | `/api/v1/feedback` | 反馈分页、状态计数与已通过类别分布，不含短信正文 |
+| PUT | `/api/v1/feedback/{operation_id}` | 通过或驳回待审核反馈，记录审核设备与时间 |
 | GET / PUT | `/api/v1/filter/rules` | 读取 / 保存完整规则 |
 | GET | `/api/v1/devices` | Device 数组，不返回令牌哈希 |
 | DELETE | `/api/v1/devices/{id}` | 撤销设备，关闭其 WebSocket，返回 `{revoked:true}` |
@@ -86,6 +88,8 @@ Android 设置中的「扫码绑定服务器」读取二维码，检查版本、
 category：`personal / otp / service / transaction / marketing / suspicious / uncertain`。
 action：`allow / quarantine`。confidence、risk 均为 0–1。不要将待分类等同于隔离。
 
+成功取得两份一致的上游响应时，消息额外返回 `classifier_action`（allow/block）、`classifier_reason` 和 `classifier_threshold`（实际 thresholdUsed），方便区分上游建议与用户规则的最终结果。无法取得可靠评分时不返回这些字段。
+
 ### 同步与查询
 
 增量同步返回 `{messages:[...], cursor:整数, has_more:布尔}`。游标只在客户端本地事务成功后提交，has_more 为 true 时继续拉取。WebSocket 重连后也从原游标补拉。**不要把网页 category / action 过滤用于该接口，否则会漏掉恢复和分类更新。**
@@ -100,19 +104,26 @@ action：`allow / quarantine`。confidence、risk 均为 0–1。不要将待分
 
 反馈再增加 `corrected_category`。反馈相同 operation_id 重试去重，内容冲突返回 409。恢复不会删除短信，后续补分类也保留用户恢复结果。当前规则只对后续上传及尚未完成分类的消息生效，不自动回溯重判全部历史。
 
+### 纠错审核
+
+- `GET /api/v1/feedback?status=pending_review&offset=0&limit=20`：返回 `{feedback:[...], total, offset, has_more, counts, corrections}`。status 可为空或 `pending_review / approved / rejected`，limit 为 1–50。counts 为全部反馈的状态计数，corrections 为已通过记录的 `原预测→纠正类别` 分布；均按纠错记录数统计，不代表独立短信误判率。
+- `PUT /api/v1/feedback/{operation_id}`：请求 `{"review_status":"approved"}` 或 `rejected`，返回完整反馈。仅待审核可变更；同结论重试幂等，反向更改返回 409。记录审核设备 `reviewed_by` 与 epoch 秒 `reviewed_at`，刷盘失败返回 503 并回滚。
+- 反馈额外保留提交时的 `predicted_category / model_version`；旧快照缺少这些字段时，列表从当前消息补充显示，不能作为原始预测的历史证据。列表不复制短信正文；查看短信使用已有详情接口。
+- 已审核反馈再次提交同一个 operation_id，返回已有审核状态，不重新打开队列。审核不改变短信、隔离动作或模型参数，也不会自动向分类器发送数据。模型评估和训练仍需单独明确授权。
+
 ### 规则
 
 ```json
 {"mode":"classify","threshold":0.95,"whitelist":[],"blacklist":[]}
 ```
 
-mode：`classify / filter / block`，threshold 为 0.8–1，白黑名单各最多 500 项、每项最多 128 字节。PUT 为完整替换。验证码、交易、安全内容优先保护；模型异常 fail-open；未经校准或需复核的模型不只因分数达到阈值而隔离。明确的黑名单规则仍服从重要消息保护。
+mode：`classify / filter / block`，threshold 为 0.8–1（兼容旧客户端字段，仅传给上游，不再参与 Go 本地置信度判断），白黑名单各最多 500 项、每项最多 128 字节。PUT 为完整替换。模型隔离决策来自 `/sms/score`；上游实际阈值由其环境变量或模型配置决定，返回的 `thresholdUsed` 才是有效阈值。验证码与交易类别、白名单、人工恢复优先保护；分类或评分任一步异常均 fail-open。移除原先本地正文数字正则及置信度阈值隔离逻辑。明确黑名单仍服从类别保护，失败／不确定结果正常保留。
 
 ### Device 与状态
 
 Device 字段：`device_id, name, public_key, active, expires_at`。设备在线统计只表示存在有效授权的 WebSocket 连接，不保证 Android 后台进程一直在线。
 
-status 字段：`messages, quarantined, pending_classification, categories, authorized_devices, connected_devices, pending_feedback, revision, classifier_configured, server_time`。不会包含短信正文、发件人或令牌；classifier_configured 不代表上游健康，健康用 `/healthz`。
+status 字段：`messages, quarantined, restored, quarantine_reasons, pending_classification, categories, authorized_devices, connected_devices, pending_feedback, revision, classifier_configured, server_time`。restored 为全库已人工恢复条数，quarantine_reasons 为当前隔离原因分布，pending_feedback 只统计待审核反馈。不会包含短信正文、发件人或令牌；classifier_configured 不代表上游健康，健康用 `/healthz`。
 
 ### 错误与重试
 

@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/dsclca12/PrivateSMS-Classifier",
+  "commit": "87f5874057f12756c7c5a0cc2544b04320fbf591",
+  "directory": "PrivateSMS-Classifier",
+  "integration": "ordinary vendored files, no Git submodule or nested .git",
+  "source_changes": "none",
+  "runtime_dependencies": "Pinned separately in requirements/classifier-runtime.txt; audited Starlette and pytest versions exceed upstream optional-extra upper bounds and are verified against the unmodified source.",
+  "license": "Apache-2.0; see PrivateSMS-Classifier/LICENSE and NOTICE",
+  "model": "PrivateSMS-Classifier/models/rbt3-six-class/model.int8.onnx"
+}

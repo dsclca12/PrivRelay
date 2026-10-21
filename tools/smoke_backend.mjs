@@ -45,8 +45,8 @@ async function request(method, route, { token, cookie, body, expected = 200, ori
   return { data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] }
 }
 
-async function start() {
-  child = spawn(path.join(root, 'artifacts', 'privrelay-server.exe'), ['-listen', `127.0.0.1:${port}`, '-data', path.join(directory, 'store.enc'), '-classifier', classifier], { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+async function start(classifierURL = classifier) {
+  child = spawn(path.join(root, 'artifacts', 'privrelay-server.exe'), ['-listen', `127.0.0.1:${port}`, '-data', path.join(directory, 'store.enc'), '-classifier', classifierURL], { cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
   let output = '', errors = ''
   child.stdout.on('data', chunk => { output += chunk })
   child.stderr.on('data', chunk => { errors += chunk })
@@ -115,6 +115,7 @@ try {
     await request('PUT', '/api/v1/filter/rules', { cookie, origin: base, body: { mode: 'block', threshold: 0.95, whitelist: [], blacklist: ['PR-SMOKE'] } })
     const { data } = await request('POST', '/api/v1/messages/sync', { token: android.token, body: { messages: fixtures } })
     assert(data.messages.length === 3 && data.messages.every(m => m.classified && m.model_version), 'Missing real classification')
+    assert(data.messages.every(m => m.classifier_action === 'allow' && m.classifier_reason.startsWith('review_required:') && m.classifier_threshold >= 0), 'Official scoring provenance missing')
     assert(data.messages[0].category === 'marketing' && data.messages[0].action === 'quarantine', 'Marketing not quarantined')
     assert(data.messages[1].category === 'otp' && data.messages[1].action === 'allow', 'OTP not protected')
     report.classification = data.messages.map(m => ({ category: m.category, action: m.action, model: m.model_version }))
@@ -154,6 +155,44 @@ try {
     await request('DELETE', `/api/v1/devices/${android.device_id}`, { cookie, origin: base })
     await request('GET', '/api/v1/messages', { token: android.token, expected: 401 })
     assert((await request('GET', '/api/v1/messages/search', { cookie })).data.total === 3, 'Revocation deleted history')
+  })
+  await check('500 real-model messages, concurrent batches and duplicate retries conserve data', async () => {
+    const batches = Array.from({ length: 10 }, (_, batch) => Array.from({ length: 50 }, (_, item) => ({
+      message_id: randomUUID(), sender: 'SYNTHETIC-LOAD', body: `合成容量测试 ${batch}-${item}：周末一起吃饭。`,
+      received_at: now + 1000 + batch * 50 + item, subscription_id: 1, slot: 0,
+    })))
+    for (let offset = 0; offset < batches.length; offset += 5) {
+      await Promise.all(batches.slice(offset, offset + 5).map(async messages => {
+        const uploaded = (await request('POST', '/api/v1/messages/sync', { token: web.token, body: { messages } })).data
+        assert(uploaded.messages.length === 50 && uploaded.messages.every(m => m.classified && m.classifier_action === 'allow'), 'Load upload lost classification')
+        await request('POST', '/api/v1/messages/sync', { token: web.token, body: { messages } })
+      }))
+    }
+    assert((await request('GET', '/api/v1/status', { cookie })).data.messages === 503, 'Load/retry duplicated or lost messages')
+    const seen = new Set()
+    for (let offset = 0; offset < 500; offset += 50) {
+      const page = (await request('GET', `/api/v1/messages/search?q=SYNTHETIC-LOAD&offset=${offset}&limit=50`, { cookie })).data
+      assert(page.total === 500 && page.messages.length === 50, 'Load search incomplete')
+      page.messages.forEach(m => seen.add(m.message_id))
+    }
+    assert(seen.size === 500, 'Load pagination repeated rows')
+  })
+  const outageFixture = { message_id: randomUUID(), sender: 'SYNTHETIC-OUTAGE', body: '合成故障恢复验证，原文必须保留。', received_at: now + 2000, subscription_id: 1, slot: 0 }
+  await check('real-process classifier outage ACKs original text and retry keeps revision stable', async () => {
+    await stop(); await start(classifier + '/unavailable')
+    const upload = () => request('POST', '/api/v1/messages/sync', { token: web.token, body: { messages: [outageFixture] } })
+    const original = (await upload()).data.messages[0]
+    const retried = (await upload()).data.messages[0]
+    assert(!original.classified && original.action === 'allow' && original.body === outageFixture.body, 'Outage did not fail-open durably')
+    assert(retried.revision === original.revision, 'Outage replay caused a false revision')
+    assert((await request('GET', '/api/v1/status', { cookie })).data.messages === 504, 'Outage lost data')
+  })
+  await check('model reconnect and backend restart recover pending classification without duplicates', async () => {
+    await stop(); await start()
+    const recovered = (await request('POST', '/api/v1/messages/sync', { token: web.token, body: { messages: [outageFixture] } })).data.messages[0]
+    assert(recovered.classified && recovered.classifier_action === 'allow' && recovered.body === outageFixture.body, 'Model recovery failed')
+    assert((await request('GET', '/api/v1/status', { cookie })).data.messages === 504, 'Recovery duplicated messages')
+    await request('GET', '/api/v1/messages', { token: android.token, expected: 401 })
   })
   report.passed = true
   console.log(`All ${results.length} real-process checks passed.`)

@@ -20,6 +20,7 @@ const router = createRouter({
         { path: 'rules', name: 'rules', component: () => import('../views/RulesView.vue') },
         { path: 'devices', name: 'devices', component: () => import('../views/DevicesView.vue') },
         { path: 'monitor', name: 'monitor', component: () => import('../views/MonitorView.vue') },
+        { path: 'feedback', name: 'feedback', component: () => import('../views/FeedbackView.vue') },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/messages' },

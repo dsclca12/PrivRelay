@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "privatesms-classifier"
+version = "0.1.0"
+description = "Local-first Chinese SMS classification baseline"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "scikit-learn>=1.5,<2",
+  "joblib>=1.3,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+api = ["fastapi>=0.115,<1", "starlette>=0.46,<1", "httpx>=0.27,<1", "uvicorn>=0.30,<1"]
+transformer = ["torch>=2.5,<3", "transformers>=4.45,<6"]
+onnx = ["onnx>=1.16,<2", "onnxruntime>=1.19,<2", "transformers>=4.45,<6"]
+research = ["jieba==0.42.1"]
+
+[project.scripts]
+privatesms = "privatesms.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"privatesms.api" = ["test.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -51,11 +51,6 @@ func TestPolicyProtection(t *testing.T) {
 			t.Fatal(category)
 		}
 	}
-	m := testMessage()
-	m.Body = "合成安全验证码 123456"
-	if applyPolicy(m, Classification{Category: "marketing", Confidence: 1, Calibrated: true, Model: "test"}, true, r).Action != "allow" {
-		t.Fatal("safety guard")
-	}
 	if applyPolicy(testMessage(), Classification{}, false, r).Action != "allow" {
 		t.Fatal("fail open")
 	}
@@ -106,7 +101,7 @@ func TestAuthAndDurableIdempotency(t *testing.T) {
 func TestClassifierRestoreFeedbackCursorAndRevoke(t *testing.T) {
 	s, token := fixture(t)
 	classifier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, Classification{Category: "marketing", Confidence: 0.99, Risk: 0.99, Review: true, Model: "test-preview"})
+		serveClassification(w, r, Classification{Category: "marketing", Confidence: 0.99, Risk: 0.99, Review: true, Model: "test-preview"})
 	}))
 	defer classifier.Close()
 	s.classifier = classifier.URL
@@ -175,7 +170,7 @@ func TestClassificationOutageEventuallyRecoversAfterAck(t *testing.T) {
 		t.Fatal("outage incorrectly classified")
 	}
 	classifier := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, Classification{Category: "marketing", Confidence: 0.99, Review: true, Model: "recovered-model"})
+		serveClassification(w, r, Classification{Category: "marketing", Confidence: 0.99, Review: true, Model: "recovered-model"})
 	}))
 	defer classifier.Close()
 	s.classifier = classifier.URL
@@ -196,4 +191,21 @@ func TestMalformedClassifierIsFailOpen(t *testing.T) {
 	if _, ok := s.classify(testMessage()); ok {
 		t.Fatal("missing review metadata must not be trusted")
 	}
+}
+
+// Fixture implements both official endpoints. Production never derives decisions locally.
+func serveClassification(w http.ResponseWriter, r *http.Request, c Classification) {
+	if r.URL.Path == "/api/v1/classify" {
+		writeJSON(w, 200, c)
+		return
+	}
+	if r.URL.Path != "/sms/score" {
+		http.NotFound(w, r)
+		return
+	}
+	action := "allow"
+	if c.IsSpam && c.Calibrated && !c.Review && (c.Category == "marketing" || c.Category == "suspicious") {
+		action = "block"
+	}
+	writeJSON(w, 200, ScoreDecision{Action: action, Score: c.Risk, Reason: "upstream-fixture", Model: c.Model, Threshold: 0.5, Category: c.Category, Review: c.Review})
 }

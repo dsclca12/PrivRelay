@@ -1,6 +1,6 @@
 # PrivRelay Web 控制台
 
-Vue 3 + TypeScript + Element Plus，提供消息、隔离、设备、规则与运行监控。
+Vue 3 + TypeScript + Element Plus，提供消息、隔离、设备、规则、纠错审核与运行监控。
 
 ## 前后端一起启动
 
@@ -20,7 +20,9 @@ Vue 3 + TypeScript + Element Plus，提供消息、隔离、设备、规则与�
 - 注册令牌仅暂存在内存，随后调用 session 接口换取 HttpOnly、SameSite=Strict Cookie；已有 localStorage 令牌登录时会自动迁移并移除。
 - 页面刷新通过 `GET /api/v1/session` 恢复身份，退出调用 `DELETE /api/v1/session` 清除服务端 Cookie。
 - WebSocket 使用同源 Cookie 连接 `/api/v1/ws`，不把令牌放进 URL。收到 changed 立即补拉，重连后补拉历史，5 秒轮询兜底。
-- 消息按 revision 增量读取，支持过滤、分页、详情、恢复和纠错；规则中心保存完整规则。
+- 消息和拦截箱使用服务端搜索、筛选与分页，每页最多 50 条，不再预先下载全部正文。后台刷新只读取聚合状态并重新查询当前页；Android 的 revision 增量同步接口保留。
+- 纠错审核页支持待审核、已通过、已驳回筛选，查看原短信、审核记录和已通过纠错的类别分布。审核不直接改分类或模型，不自动上传训练数据。
+- 规则中心保存完整规则。
 
 ## 部署
 
@@ -30,9 +32,12 @@ API 与网页必须同源，不直接跨域部署。CSP 允许 Element Plus 所�
 
 ## 验证
 
+原版分类器和不含 Android 的全面测试可运行根目录 `./tools/test-all.ps1 -AuditDependencies`，实际范围、上游 Windows 平台失败和 Docker 未运行项见[测试报告](../docs/NON_ANDROID_TEST_REPORT.md)。规则页的模型决策采用上游 `/sms/score`，详情保留上游建议、依据与实际阈值；本地旧阈值字段只作兼容。
+
 仓库根目录：
 
 ```powershell
+npm test --prefix web_client
 npm run build --prefix web_client
 cd server
 ../.tools/go/bin/go.exe test ./...
@@ -47,4 +52,4 @@ node tools/smoke_web.mjs
 
 ## 当前边界
 
-单用户，无多租户或角色权限。冷启动以 50 条每页读取历史，超过 2 万条需加载更多。分类器未配置时照常保存并显示待分类；真实 Android 收信、后台运行及真实模型效果需另外实机验收。
+单用户，无多租户或角色权限。消息历史按服务端实时列表分页；有新消息或恢复时，页内内容可能移动，非快照分页。分类器未配置时照常保存并显示待分类；真实 Android 收信、后台运行及真实模型效果需另外实机验收。

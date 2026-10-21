@@ -60,11 +60,16 @@ func (s *Server) messageDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	counts := map[string]int{}
-	quarantined, pending, active, online := 0, 0, 0, 0
+	quarantined, restored, pending, active, online := 0, 0, 0, 0, 0
+	reasons := map[string]int{}
 	for _, m := range s.store.Messages {
 		counts[m.Category]++
 		if m.Action == "quarantine" {
 			quarantined++
+			reasons[m.Reason]++
+		}
+		if m.Restored {
+			restored++
 		}
 		if !m.Classified {
 			pending++
@@ -83,8 +88,14 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, 200, map[string]any{"messages": len(s.store.Messages), "quarantined": quarantined,
+	pendingFeedback := 0
+	for _, f := range s.store.Feedback {
+		if f.Status == "pending_review" {
+			pendingFeedback++
+		}
+	}
+	writeJSON(w, 200, map[string]any{"messages": len(s.store.Messages), "quarantined": quarantined, "restored": restored, "quarantine_reasons": reasons,
 		"pending_classification": pending, "categories": counts, "authorized_devices": active,
-		"connected_devices": online, "pending_feedback": len(s.store.Feedback), "revision": s.store.Revision,
+		"connected_devices": online, "pending_feedback": pendingFeedback, "revision": s.store.Revision,
 		"classifier_configured": s.classifier != "", "server_time": now})
 }

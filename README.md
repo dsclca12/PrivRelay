@@ -10,10 +10,10 @@
 |---|---|---|
 | Android | Flutter / Kotlin、新短信接收、加密存储、离线队列、收件箱、隔离与恢复 | 非默认短信应用；不导入系统历史、不发送短信，不能抑制系统短信应用通知 |
 | Go 服务 | 签名配对、消息同步与查询、规则、纠错、设备撤销、浏览器会话、WebSocket | 单用户、单进程、加密文件快照；尚无 PostgreSQL、多租户、多实例支持 |
-| 分类器 | 对接独立分类服务；异常时保存原文并等待补分类 | 本仓库不分发模型；未经校准或需复核的预测不能仅凭分数自动隔离 |
-| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、运行监控；管理台 API 与静态目录托管 | 浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
+| 分类器 | 集成 PrivateSMS-Classifier 原版源码及公开 INT8 模型；分类、风险与模型隔离均采用其 API | 公开预览模型要求人工复核，不会仅凭分数自动隔离；人工名单与恢复由 PrivRelay 管理 |
+| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、纠错审核、运行监控；管理台 API 与静态目录托管 | 浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
 
-服务器及分类服务能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
+服务器及分类服务能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
 
 ## 快速开始
 
@@ -25,9 +25,9 @@
 ./tools/start.ps1
 ```
 
-脚本安装缺失的 Web 依赖、构建前后端，然后由 Go 在同一个地址提供网页和 API。打开 `http://127.0.0.1:8787`，用终端显示的一次性码登录。在设备中心填写手机可访问的 HTTPS 地址并生成二维码，安卓设置中点「扫码绑定服务器」，确认后同步；也支持手动输入配对码，无需重启服务。默认沿用 `server/data/privrelay.enc`；按 Ctrl+C 停止。
+脚本使用 Python 3.13+（Windows，已测试 3.14）准备固定依赖并启动原版分类器，安装缺失的 Web 依赖、构建前后端，然后由 Go 在同一个地址提供网页和 API。打开 `http://127.0.0.1:8787`，用终端显示的一次性码登录。在设备中心填写手机可访问的 HTTPS 地址并生成二维码，安卓设置中点「扫码绑定服务器」，确认后同步；也支持手动输入配对码，无需重启服务。默认沿用 `server/data/privrelay.enc`；按 Ctrl+C 停止。
 
-接入分类器：`./tools/start.ps1 -Classifier http://127.0.0.1:18788`。不配置时消息照常保存、显示为待分类。Docker 执行 `docker compose up --build -d` 也会构建并托管网页。
+已有分类器时使用 `./tools/start.ps1 -Classifier http://127.0.0.1:18788`；`-WithoutClassifier` 可主动只保存、同步消息。Docker 执行 `docker compose up --build -d` 会一起构建网页、后端和分类器。
 
 以下为分别启动各模块的开发方式。
 
@@ -86,6 +86,8 @@ npm run dev
 | 对接客户端与管理台 | [后端 API](docs/BACKEND_API.md) |
 | 本地开发、测试和提交变更 | [开发与贡献指南](CONTRIBUTING.md) |
 | 查询依赖、许可证和权限 | [依赖与权限](docs/DEPENDENCIES.md) |
+| 原版分类器集成与非 Android 全面测试 | [集成说明](docs/CLASSIFIER_INTEGRATION.md)、[测试报告](docs/NON_ANDROID_TEST_REPORT.md) |
+| 查看本轮补齐内容和剩余工作 | [完成情况与后续工作](docs/COMPLETION_STATUS.md) |
 | 查看完整立项、架构与未来验收目标 | [项目设计](docs/PROJECT_DESIGN.md) |
 
 ## 仓库结构
@@ -95,6 +97,8 @@ android_client/   Flutter 客户端、Kotlin 平台代码及测试
 web_client/       Vue 3 + TypeScript 管理控制台
 server/           Go API、策略、加密持久化及测试
 contracts/        Go / Android 共用的消息契约样本
+integrations/     上游普通源码快照、公开 INT8 模型、来源与校验清单
+requirements/     分类服务的固定 Python 运行依赖
 tools/            隔离后端冒烟测试、Windows 分类器初测入口
 docs/             使用、部署、接口、设计及历史测试报告
 compose.yaml      单实例后端容器配置

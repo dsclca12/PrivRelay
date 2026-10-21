@@ -1,0 +1,36 @@
+services:
+  privatesms:
+    build:
+      context: .
+      args:
+        INSTALL_TRANSFORMER: ${PRIVATESMS_INSTALL_TRANSFORMER:-0}
+        INSTALL_ONNX: ${PRIVATESMS_INSTALL_ONNX:-1}
+    restart: unless-stopped
+    environment:
+      PRIVATESMS_MODEL_PATH: ${PRIVATESMS_MODEL_PATH:-/app/models/rbt3-six-class}
+      PRIVATESMS_MODEL_REGISTRY: /app/artifacts/model_registry
+      PRIVATESMS_API_KEY: ${PRIVATESMS_API_KEY:-}
+      PRIVATESMS_REVIEW_CONFIDENCE_THRESHOLD: ${PRIVATESMS_REVIEW_CONFIDENCE_THRESHOLD:-0.6}
+      PRIVATESMS_DECISION_THRESHOLD: ${PRIVATESMS_DECISION_THRESHOLD:-}
+      PRIVATESMS_ONNX_QUANTIZED: ${PRIVATESMS_ONNX_QUANTIZED:-1}
+      PRIVATESMS_INFERENCE_THREADS: ${PRIVATESMS_INFERENCE_THREADS:-4}
+      PRIVATESMS_FEEDBACK_DB: ${PRIVATESMS_FEEDBACK_DB:-/app/feedback/feedback.sqlite3}
+    user: "${PRIVATESMS_CONTAINER_UID:-1000}:${PRIVATESMS_CONTAINER_GID:-1000}"
+    ports:
+      - "${PRIVATESMS_BIND_HOST:-127.0.0.1}:8000:8000"
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+      - ./data/feedback:/app/feedback
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
