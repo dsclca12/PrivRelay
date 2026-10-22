@@ -16,6 +16,7 @@ class _InboxPageState extends ConsumerState<InboxPage> {
   final search = TextEditingController();
   String? category;
   int limit = 50;
+  bool archived = false;
   @override
   void dispose() {
     search.dispose();
@@ -45,6 +46,15 @@ class _InboxPageState extends ConsumerState<InboxPage> {
             ),
           ),
         ),
+        if (!widget.quarantine)
+          SwitchListTile(
+            title: const Text('查看已归档消息'),
+            value: archived,
+            onChanged: (value) => setState(() {
+              archived = value;
+              limit = 50;
+            }),
+          ),
         SizedBox(
           height: 48,
           child: ListView(
@@ -89,6 +99,7 @@ class _InboxPageState extends ConsumerState<InboxPage> {
               for (var offset = 0; offset < limit; offset += 50) {
                 final page = await r.db.page(
                   quarantine: widget.quarantine,
+                  archived: archived,
                   search: search.text,
                   category: category,
                   offset: offset,
@@ -333,6 +344,16 @@ class DetailPage extends ConsumerWidget {
                   icon: const Icon(Icons.restore),
                   label: const Text('恢复到收件箱'),
                 ),
+              OutlinedButton.icon(
+                onPressed: () =>
+                    perform(context, () => r.archive(id, !m.archived)),
+                icon: Icon(
+                  m.archived
+                      ? Icons.unarchive_outlined
+                      : Icons.archive_outlined,
+                ),
+                label: Text(m.archived ? '取消归档' : '归档消息'),
+              ),
               OutlinedButton.icon(
                 onPressed: () async {
                   final selected = await showDialog<String>(

@@ -1,0 +1,23 @@
+# Usage: PRIVRELAY_DOMAIN=relay.example.com docker compose -f compose.yaml -f compose.https.yaml up --build -d
+services:
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      PRIVRELAY_DOMAIN: ${PRIVRELAY_DOMAIN:?Set the public hostname pointing to this server}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - proxy-data:/data
+      - proxy-config:/config
+    depends_on:
+      server:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  proxy-data:
+  proxy-config:

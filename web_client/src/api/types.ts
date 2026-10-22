@@ -3,6 +3,7 @@
 export type MessageAction = 'allow' | 'quarantine'
 
 export interface Message {
+  archived?: boolean
   message_id: string
   sender: string
   body: string
@@ -11,6 +12,7 @@ export interface Message {
   subscription_id: number
   slot: number
   category: string
+  corrected_category?: string
   confidence: number
   risk: number
   needs_review: boolean
@@ -64,6 +66,15 @@ export interface RegisterRequest {
   nonce: string
   pairing_code: string
   signature: string
+  e2ee?: boolean
+}
+
+export interface EncryptedMessage {
+  message_id: string
+  device_id: string
+  received_at: number
+  revision: number
+  ciphertext: string
 }
 
 export interface RegisterResponse {

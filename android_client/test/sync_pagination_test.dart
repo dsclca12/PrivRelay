@@ -10,7 +10,9 @@ import 'package:privrelay/core/platform.dart';
 import 'package:privrelay/data/models/message.dart';
 import 'package:privrelay/data/repository.dart';
 
-class EmptySpool extends SmsPlatform {
+import 'fake_vault_platform.dart';
+
+class EmptySpool extends SmsPlatform with FakeVault {
   final scheduled = <int>[];
   @override
   Future<bool> lock() async => true;
@@ -59,6 +61,10 @@ void main() {
               'device_id': data['device_id'],
             }),
           );
+        } else if (request.uri.path.endsWith('/params')) {
+          request.response.write(jsonEncode({'salt': 'synthetic-salt'}));
+        } else if (request.method == 'POST') {
+          request.response.write('{}');
         } else {
           cursors.add(request.uri.queryParameters['cursor']!);
           request.response.write(
@@ -71,15 +77,19 @@ void main() {
       await db.setPref('cursor', '900');
       final platform = EmptySpool();
       final r = PairingRepository(db, platform: platform)
-        ..server = 'https://old.example.com';
+        ..server = 'https://old.example.com'
+        ..vaultPassphrase = 'synthetic-passphrase';
       try {
         await r.pair(
           'http://127.0.0.1:${server.port}',
           '  synthetic-pairing-code\n',
           allowHttp: true,
         );
-        expect(platform.signed, endsWith('\nsynthetic-pairing-code'));
-        expect(cursors, ['0']);
+        expect(platform.signed, endsWith('\nsynthetic-pairing-code\ne2ee-v1'));
+        expect(cursors, [
+          '0',
+          '0',
+        ], reason: 'Shared-key probe and initial pull both start at zero');
         expect(await db.pref('cursor'), '0');
         expect(r.error, isEmpty);
       } finally {
@@ -90,10 +100,17 @@ void main() {
     },
   );
   test('bounded pull schedules remaining remote pages even without pending uploads', () async {
+    FlutterSecureStorage.setMockInitialValues({'token': 'synthetic-token'});
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final cursors = <int>[];
     final listener = server.listen((request) async {
       expect(request.headers.value('Authorization'), 'Bearer synthetic-token');
+      if (request.method == 'POST') {
+        request.response.headers.contentType = ContentType.json;
+        request.response.write('{}');
+        await request.response.close();
+        return;
+      }
       final cursor = int.parse(request.uri.queryParameters['cursor']!);
       cursors.add(cursor);
       final end = min(cursor + 50, 301);
@@ -102,12 +119,23 @@ void main() {
         jsonEncode({
           'messages': [
             for (var i = cursor; i < end; i++)
-              SmsMessage(
-                id: 'remote-$i',
-                sender: 'synthetic',
-                body: 'pagination fixture',
-                receivedAt: i,
-              ).toJson(),
+              {
+                'message_id': 'remote-$i',
+                'received_at': i,
+                'revision': i + 1,
+                'ciphertext': base64Encode(
+                  utf8.encode(
+                    jsonEncode(
+                      SmsMessage(
+                        id: 'remote-$i',
+                        sender: 'synthetic',
+                        body: 'pagination fixture',
+                        receivedAt: i,
+                      ).toJson(),
+                    ),
+                  ),
+                ),
+              },
           ],
           'cursor': end,
           'has_more': end < 301,
@@ -116,20 +144,23 @@ void main() {
       await request.response.close();
     });
     final db = AppDatabase(NativeDatabase.memory());
+    await db.setPref('server', 'http://127.0.0.1:${server.port}');
     final platform = EmptySpool();
     final r = RelayRepository(db, platform: platform)
       ..server = 'http://127.0.0.1:${server.port}'
+      ..vaultPassphrase = 'synthetic-passphrase'
+      ..vaultSalt = 'synthetic-salt'
       ..token = 'synthetic-token';
     try {
       await r.sync();
       expect(r.error, isEmpty);
       expect(r.pending, 0);
-      expect(await db.pref('cursor'), '250');
+      expect(await db.pref('encrypted_cursor'), '250');
       expect(platform.scheduled, [
         1,
       ], reason: 'More remote history must cause an immediate continuation');
       await r.sync();
-      expect(await db.pref('cursor'), '301');
+      expect(await db.pref('encrypted_cursor'), '301');
       expect(await db.countState(['acked']), 301);
       expect(cursors, [0, 50, 100, 150, 200, 250, 300]);
       expect(platform.scheduled, [

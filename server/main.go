@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -21,11 +22,13 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"reflect"
+	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -37,6 +40,8 @@ type Server struct {
 	classifier, classifierKey string
 	client                    *http.Client
 	peers                     map[*websocket.Conn]string
+	peerSignals               map[*websocket.Conn]chan struct{}
+	retryCursor               string
 	failures                  map[string]int
 	webDir                    string
 }
@@ -51,7 +56,7 @@ func randomToken() string {
 func hash(raw string) string { h := sha256.Sum256([]byte(raw)); return hex.EncodeToString(h[:]) }
 func newServer(store *Store, classifier string) *Server {
 	return &Server{store: store, code: randomToken(), codeExpires: time.Now().Add(10 * time.Minute), classifier: classifier,
-		client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}, peers: map[*websocket.Conn]string{}, failures: map[string]int{}}
+		client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}, peers: map[*websocket.Conn]string{}, peerSignals: map[*websocket.Conn]chan struct{}{}, failures: map[string]int{}}
 }
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -60,16 +65,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 512*1024)
+	return readJSONLimit(w, r, v, 512*1024)
+}
+func readJSONLimit(w http.ResponseWriter, r *http.Request, v any, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
-	if decoder.Decode(v) != nil {
+	reject := func(err error) bool {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, 413, map[string]string{"error": "request_too_large"})
+			return false
+		}
 		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
 		return false
 	}
+	if err := decoder.Decode(v); err != nil {
+		return reject(err)
+	}
 	var extra any
-	if decoder.Decode(&extra) != io.EOF {
-		writeJSON(w, 400, map[string]string{"error": "invalid_request"})
-		return false
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return reject(err)
 	}
 	return true
 }
@@ -127,7 +142,7 @@ func (s *Server) handler() http.Handler {
 		writeJSON(w, 200, map[string]string{"status": "ok", "classifier": status})
 	})
 	mux.HandleFunc("POST /api/v1/devices/register", s.register)
-	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		d, ok := s.auth(r)
@@ -136,6 +151,32 @@ func (s *Server) handler() http.Handler {
 			return
 		}
 		path := r.URL.Path
+		if (d.E2EE || s.store.E2EEEnabled) && (path == "/api/v1/messages/sync" || path == "/api/v1/messages" ||
+			path == "/api/v1/messages/search" || path == "/api/v1/filter/quarantine" ||
+			strings.HasPrefix(path, "/api/v1/messages/") || strings.HasPrefix(path, "/api/v1/feedback")) {
+			writeJSON(w, 403, map[string]string{"error": "e2ee_only"})
+			return
+		}
+		if path == "/api/v2/encrypted-messages/sync" && r.Method == "POST" {
+			s.syncEncryptedMessages(w, r, d)
+			return
+		}
+		if path == "/api/v2/crypto/params" && r.Method == "GET" {
+			writeJSON(w, 200, map[string]any{"version": 1, "kdf": "PBKDF2-SHA256", "iterations": 600000, "salt": s.store.VaultSalt})
+			return
+		}
+		if path == "/api/v2/encrypted-messages" && r.Method == "GET" {
+			if !d.E2EE {
+				writeJSON(w, 403, map[string]string{"error": "e2ee_required"})
+				return
+			}
+			s.listEncryptedMessages(w, r)
+			return
+		}
+		if path == "/api/v2/legacy-migration" && r.Method == "POST" {
+			s.migrateLegacyMessages(w, r, d)
+			return
+		}
 		if path == "/api/v1/ws" && r.Method == "GET" {
 			s.websocket(w, r, d)
 			return
@@ -171,6 +212,8 @@ func (s *Server) handler() http.Handler {
 			s.messageDetail(w, r)
 		case path == "/api/v1/status" && r.Method == "GET":
 			s.status(w, r)
+		case path == "/api/v1/feedback/export" && r.Method == "POST":
+			s.exportFeedback(w, r, d)
 		case path == "/api/v1/feedback" && r.Method == "GET":
 			s.listFeedback(w, r)
 		case strings.HasPrefix(path, "/api/v1/feedback/") && r.Method == "PUT":
@@ -211,6 +254,7 @@ func (s *Server) handler() http.Handler {
 					if owner == id {
 						peer.Close()
 						delete(s.peers, peer)
+						delete(s.peerSignals, peer)
 					}
 				}
 				writeJSON(w, 200, map[string]bool{"revoked": true})
@@ -219,9 +263,16 @@ func (s *Server) handler() http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+	mux.Handle("/api/v1/", apiHandler)
+	mux.Handle("/api/v2/", apiHandler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		// Reverse proxies must overwrite X-Forwarded-Proto with the transport
+		// they actually terminated; direct TLS is detected from r.TLS.
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		mux.ServeHTTP(w, r)
 	})
@@ -234,12 +285,17 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		Nonce     string `json:"nonce"`
 		Code      string `json:"pairing_code"`
 		Signature string `json:"signature"`
+		E2EE      bool   `json:"e2ee,omitempty"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.store.E2EEEnabled && !req.E2EE {
+		writeJSON(w, 403, map[string]string{"error": "e2ee_required"})
+		return
+	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if s.failures[host] >= 10 {
 		writeJSON(w, 429, map[string]string{"error": "restart_pairing_session"})
@@ -267,7 +323,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sig, err := base64.StdEncoding.DecodeString(req.Signature)
-	digest := sha256.Sum256([]byte(req.ID + "\n" + req.Key + "\n" + req.Nonce + "\n" + req.Code))
+	canonical := req.ID + "\n" + req.Key + "\n" + req.Nonce + "\n" + req.Code
+	if req.E2EE {
+		canonical += "\ne2ee-v1"
+	}
+	digest := sha256.Sum256([]byte(canonical))
 	if err != nil || !ecdsa.VerifyASN1(key, digest[:], sig) {
 		fail()
 		return
@@ -278,17 +338,28 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	token := randomToken()
 	before := s.snapshot()
-	s.store.Devices[req.ID] = Device{ID: req.ID, Name: req.Name, PublicKey: req.Key, TokenHash: hash(token), Active: true, Expires: time.Now().Add(90 * 24 * time.Hour).Unix()}
+	if req.E2EE {
+		s.store.E2EEEnabled = true
+	}
+	s.store.Devices[req.ID] = Device{ID: req.ID, Name: req.Name, PublicKey: req.Key, E2EE: req.E2EE, TokenHash: hash(token), Active: true, Expires: time.Now().Add(90 * 24 * time.Hour).Unix()}
 	if s.commit(w, before) {
 		s.code = ""
 		writeJSON(w, 201, map[string]string{"token": token, "device_id": req.ID})
 	}
 }
+func sameUploadedMessage(existing, incoming Message, device string) bool {
+	return existing.Device == device && existing.Sender == incoming.Sender && existing.Body == incoming.Body && existing.Received == incoming.Received && existing.Subscription == incoming.Subscription
+}
 func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) {
+	if s.store.E2EEEnabled || d.E2EE {
+		writeJSON(w, 403, map[string]string{"error": "e2ee_required"})
+		return
+	}
 	var req struct {
 		Messages []Message `json:"messages"`
 	}
-	if !readJSON(w, r, &req) {
+	// Fifty 4096-rune bodies can exceed 2 MiB with JSON surrogate-pair escapes.
+	if !readJSONLimit(w, r, &req, 3*1024*1024) {
 		return
 	}
 	if len(req.Messages) > 50 || len(req.Messages) == 0 {
@@ -301,14 +372,46 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 			return
 		}
 	}
+	// Capture immutable model settings, then perform network I/O outside the store lock.
+	worker := s.classificationWorker()
+	todo := []Message{}
+	seen := map[string]Message{}
+	for _, incoming := range req.Messages {
+		old, exists := s.store.Messages[s.store.messageID(incoming.ID)]
+		prior, duplicate := seen[incoming.ID]
+		if (exists && !sameUploadedMessage(old, incoming, d.ID)) || (duplicate && !sameUploadedMessage(prior, incoming, d.ID)) {
+			writeJSON(w, 409, map[string]string{"error": "id_conflict"})
+			return
+		}
+		seen[incoming.ID] = Message{Sender: incoming.Sender, Body: incoming.Body, Received: incoming.Received, Subscription: incoming.Subscription, Device: d.ID}
+		if (!exists || !old.Classified) && !duplicate {
+			todo = append(todo, incoming)
+		}
+	}
+	s.mu.Unlock()
+	results := worker.classifyBatch(r.Context(), todo)
+	s.mu.Lock()
+	// Revocation or configuration changes while the model ran must take effect.
+	if s.store.E2EEEnabled {
+		writeJSON(w, 403, map[string]string{"error": "e2ee_only"})
+		return
+	}
+	if current, ok := s.auth(r); !ok || current.ID != d.ID {
+		writeJSON(w, 401, map[string]string{"error": "pairing_required"})
+		return
+	}
+	if !s.sameClassificationSettings(worker) {
+		results = nil
+	}
 	before := s.snapshot()
-	result := []Message{}
-	classifierAvailable := true
-	classificationContext, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-	defer cancel()
+	type syncAcknowledgement struct {
+		Message
+		CanonicalID string `json:"canonical_message_id,omitempty"`
+	}
+	result := []syncAcknowledgement{}
 	for _, incoming := range req.Messages {
 		m, exists := s.store.Messages[s.store.messageID(incoming.ID)]
-		if exists && (m.Device != d.ID || m.Sender != incoming.Sender || m.Body != incoming.Body || m.Received != incoming.Received || m.Subscription != incoming.Subscription) {
+		if exists && !sameUploadedMessage(m, incoming, d.ID) {
 			s.rollback(before)
 			writeJSON(w, 409, map[string]string{"error": "id_conflict"})
 			return
@@ -331,12 +434,8 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 			s.store.MessageAliases[incoming.ID] = m.ID
 		}
 		if !exists || !m.Classified {
-			var c Classification
-			ok := false
-			if classifierAvailable {
-				c, ok = s.classifyContext(classificationContext, m)
-				classifierAvailable = ok
-			}
+			classified, ok := results[incoming.ID]
+			c := classified.Classification
 			// A retry during an upstream outage is still an ACK of the same
 			// durable message, not a new revision or a reversal of user restore.
 			if !exists || ok {
@@ -347,7 +446,10 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 			}
 		}
 		// ACK the caller's id while preserving server identity for subsequent pulls.
-		ack := m
+		ack := syncAcknowledgement{Message: m}
+		if incoming.ID != m.ID {
+			ack.CanonicalID = m.ID
+		}
 		ack.ID = incoming.ID
 		result = append(result, ack)
 	}
@@ -410,34 +512,59 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 422, map[string]string{"error": "operation_id"})
 		return
 	}
-	before := s.snapshot()
-	switch parts[1] {
-	case "restore":
-		if m.Restored && m.Action == "allow" && m.Reason == "用户恢复" {
-			writeJSON(w, 200, m)
+	kind := parts[1]
+	if kind != "archive" && kind != "unarchive" && kind != "restore" && kind != "feedback" {
+		http.NotFound(w, r)
+		return
+	}
+	if old, exists := s.store.MessageOperations[req.ID]; exists {
+		if old.MessageID != m.ID || old.Kind != kind {
+			writeJSON(w, 409, map[string]string{"error": "operation_conflict"})
 			return
 		}
-		m.Action = "allow"
-		m.Reason = "用户恢复"
-		m.Restored = true
-		s.store.Revision++
-		m.Revision = s.store.Revision
-		s.store.Messages[m.ID] = m
+		// Return the latest state without reapplying an older user intention.
+		writeJSON(w, 200, m)
+		return
+	}
+	if old, exists := s.store.Feedback[req.ID]; exists {
+		if kind != "feedback" || old.MessageID != m.ID || old.Category != req.Category {
+			writeJSON(w, 409, map[string]string{"error": "operation_conflict"})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": old.Status})
+		return
+	}
+	before := s.snapshot()
+	switch kind {
+	case "archive", "unarchive", "restore":
+		changed := false
+		if kind == "restore" {
+			changed = !m.Restored || m.Archived || m.Action != "allow" || m.Reason != "用户恢复"
+			m.Action, m.Reason, m.Restored, m.Archived = "allow", "用户恢复", true, false
+		} else {
+			archived := kind == "archive"
+			changed = m.Archived != archived
+			m.Archived = archived
+		}
+		if changed {
+			s.store.Revision++
+			m.Revision = s.store.Revision
+			s.store.Messages[m.ID] = m
+		}
+		if s.store.MessageOperations == nil {
+			s.store.MessageOperations = map[string]MessageOperation{}
+		}
+		// Persist no-op receipts too: a later retry must not undo a newer change.
+		s.store.MessageOperations[req.ID] = MessageOperation{MessageID: m.ID, Kind: kind}
 		if s.commit(w, before) {
 			writeJSON(w, 200, m)
-			s.broadcast()
+			if changed {
+				s.broadcast()
+			}
 		}
 	case "feedback":
 		if !categories[req.Category] {
 			writeJSON(w, 422, map[string]string{"error": "category"})
-			return
-		}
-		if old, exists := s.store.Feedback[req.ID]; exists {
-			if old.MessageID != m.ID || old.Category != req.Category {
-				writeJSON(w, 409, map[string]string{"error": "operation_conflict"})
-				return
-			}
-			writeJSON(w, 200, map[string]string{"status": old.Status})
 			return
 		}
 		s.store.Feedback[req.ID] = Feedback{ID: req.ID, MessageID: m.ID, Category: req.Category, Status: "pending_review", Predicted: m.Category, Model: m.Model}
@@ -486,8 +613,18 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	s.peers[conn] = d.ID
+	signal := make(chan struct{}, 1)
+	s.peerSignals[conn] = signal
+	done := make(chan struct{})
 	go func() {
-		defer func() { s.mu.Lock(); delete(s.peers, conn); s.mu.Unlock(); conn.Close() }()
+		defer func() {
+			s.mu.Lock()
+			delete(s.peers, conn)
+			delete(s.peerSignals, conn)
+			s.mu.Unlock()
+			close(done)
+			conn.Close()
+		}()
 		conn.SetReadLimit(1024)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -495,69 +632,68 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request, d Device) {
 			}
 		}
 	}()
+	// Exactly one writer per connection. Slow clients never hold the store lock.
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-signal:
+				_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
+				if conn.WriteJSON(map[string]string{"event": "changed"}) != nil {
+					conn.Close()
+					return
+				}
+			}
+		}
+	}()
 }
+
+// Called under mu; coalesce notifications because clients fetch from their cursor.
 func (s *Server) broadcast() {
 	for c, id := range s.peers {
 		device, ok := s.store.Devices[id]
 		if !ok || !device.Active || device.Expires <= time.Now().Unix() {
 			c.Close()
 			delete(s.peers, c)
+			delete(s.peerSignals, c)
 			continue
 		}
-		_ = c.SetWriteDeadline(time.Now().Add(time.Second))
-		if c.WriteJSON(map[string]string{"event": "changed"}) != nil {
-			c.Close()
-			delete(s.peers, c)
+		select {
+		case s.peerSignals[c] <- struct{}{}:
+		default:
 		}
 	}
 }
 
-// Retry model outages independently of phone upload ACKs. Original messages remain
-// available while classification is unavailable. The cursor exposes each update.
-func (s *Server) refreshClassifications() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	before := s.snapshot()
-	changed := false
-	processed := 0
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	for id, m := range s.store.Messages {
-		if m.Classified && !m.LLMPending {
-			continue
-		}
-		c, ok := s.classifyContext(ctx, m)
-		if !ok {
-			break
-		}
-		previous := m
-		m = applyPolicy(m, c, true, s.store.Rules)
-		if reflect.DeepEqual(previous, m) {
-			continue
-		}
-		s.store.Revision++
-		m.Revision = s.store.Revision
-		s.store.Messages[id] = m
-		changed = true
-		processed++
-		if processed >= 50 {
-			break
-		}
-	}
-	if changed {
-		if s.store.save() != nil {
-			s.rollback(before)
-		} else {
-			s.broadcast()
-		}
-	}
-}
 func main() {
 	addr := flag.String("listen", "127.0.0.1:8787", "HTTP bind (use HTTPS reverse proxy)")
 	data := flag.String("data", "data/privrelay.enc", "encrypted single-owner MVP store")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate PEM; requires -tls-key")
+	tlsKey := flag.String("tls-key", "", "TLS private key PEM; requires -tls-cert")
 	classifier := flag.String("classifier", os.Getenv("CLASSIFIER_URL"), "PrivateSMS classifier base URL")
 	webDir := flag.String("web", "", "optional built frontend directory (disabled by default)")
+	maintenance := flag.String("maintenance", "", "offline backup, restore or rotate-key")
+	output := flag.String("output", "", "new private destination directory for maintenance")
 	flag.Parse()
+	if (*tlsCert == "") != (*tlsKey == "") {
+		log.Fatal("TLS requires both -tls-cert and -tls-key")
+	}
+	if *maintenance != "" {
+		if err := maintainStore(*maintenance, *data, *output); err != nil {
+			log.Fatal("maintenance failed: ", err)
+		}
+		fmt.Println("Maintenance completed; original source preserved.")
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(*data), 0700); err != nil {
+		log.Fatal("cannot create store directory")
+	}
+	storeLock, err := lockStore(*data)
+	if err != nil {
+		log.Fatal("data store is already in use or cannot be locked")
+	}
+	defer storeLock.Close()
 	store, err := openStore(*data)
 	if err != nil {
 		log.Fatal("cannot open protected data store")
@@ -565,14 +701,51 @@ func main() {
 	s := newServer(store, *classifier)
 	s.webDir = *webDir
 	s.classifierKey = os.Getenv("CLASSIFIER_API_KEY")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	backgroundDone := make(chan struct{})
 	go func() {
+		defer close(backgroundDone)
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			s.refreshClassifications()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.refreshClassifications()
+			}
 		}
 	}()
 	fmt.Printf("PrivRelay listening on %s\nOne-time pairing code (10 minutes): %s\n", *addr, s.code)
 	server := &http.Server{Addr: *addr, Handler: s.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
-	log.Fatal(server.ListenAndServe())
+	if *tlsCert != "" {
+		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		fmt.Println("TLS enabled (minimum TLS 1.2)")
+	}
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdown)
+		s.mu.Lock()
+		for peer := range s.peers {
+			_ = peer.Close()
+		}
+		s.mu.Unlock()
+	}()
+	var serveErr error
+	if *tlsCert != "" {
+		serveErr = server.ListenAndServeTLS(*tlsCert, *tlsKey)
+	} else {
+		serveErr = server.ListenAndServe()
+	}
+	stop()
+	<-shutdownDone
+	<-backgroundDone
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Fatal("HTTP service stopped: ", serveErr)
+	}
 }

@@ -1,5 +1,6 @@
 <template>
   <div class="feedback-view">
+    <el-alert title="端到端加密消息的纠正类别仅保存在消息密文内，不会进入此服务器审核／导出队列，原始模型预测保持不变。" type="warning" :closable="false" show-icon style="margin-bottom: 14px" />
     <el-alert title="审核仅记录纠错结论，不改变短信分类或模型，不自动发送至分类服务。用于模型评估或训练仍需单独授权。"
       type="info" :closable="false" show-icon style="margin-bottom: 14px" />
     <div class="stat-grid">
@@ -14,6 +15,7 @@
         <el-option v-for="(label, key) in labels" :key="key" :value="key" :label="label" />
       </el-select>
       <el-button :loading="loading" @click="load">刷新</el-button>
+      <el-button @click="exportDialog = true">导出已通过样本</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 14px" />
     <el-table class="feedback-table" v-loading="loading" :data="result?.feedback ?? []" row-key="operation_id" empty-text="暂无纠错记录">
@@ -66,6 +68,15 @@
         {{ String(pair).split('→').map(categoryLabel).join(' → ') }}：{{ count }}
       </div>
     </el-card>
+    <el-dialog v-model="exportDialog" title="授权导出纠错样本" width="min(480px, 95vw)">
+      <p>文件下载到本机，不会自动上传至分类器或训练服务。仅包含已通过审核的记录。</p>
+      <el-select v-model="exportPurpose" aria-label="导出用途"><el-option value="evaluation" label="模型评估" /><el-option value="training" label="模型训练" /></el-select>
+      <div class="export-options">
+      <el-checkbox v-model="includeText">包含短信正文和发送方（敏感数据）</el-checkbox>
+      <el-checkbox v-model="exportConsent">我已获得对应数据的使用授权，同意按所选用途导出</el-checkbox>
+      </div>
+      <template #footer><el-button @click="exportDialog = false">取消</el-button><el-button type="primary" :disabled="!exportConsent" :loading="exporting" @click="downloadExport">导出 JSON</el-button></template>
+    </el-dialog>
     <MessageDetailDrawer v-model="drawer" :message="detail" :allow-actions="false" />
   </div>
 </template>
@@ -74,7 +85,7 @@
 import { onScopeDispose, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ApiError } from '../api/client'
-import { getMessage, listFeedback, reviewFeedback } from '../api/endpoints'
+import { exportFeedback, getMessage, listFeedback, reviewFeedback } from '../api/endpoints'
 import type { FeedbackPage, ReviewStatus } from '../api/endpoints'
 import type { Message } from '../api/types'
 import { errorText } from '../stores/auth'
@@ -90,9 +101,40 @@ const result = ref<FeedbackPage | null>(null), detail = ref<Message | null>(null
 let generation = 0
 let detailGeneration = 0
 let disposed = false
+let refreshPending = false
+
+const exportDialog = ref(false), includeText = ref(false), exportConsent = ref(false), exporting = ref(false)
+const exportPurpose = ref<'evaluation' | 'training'>('evaluation')
+watch(exportDialog, () => { exportConsent.value = false; includeText.value = false })
+async function downloadExport(): Promise<void> {
+  if (!exportConsent.value || exporting.value) return
+  exporting.value = true
+  const purpose = exportPurpose.value, withText = includeText.value
+  const session = messages.sessionVersion
+  try {
+    const samples: Record<string, unknown>[] = []
+    let offset = 0
+    for (;;) {
+      const page = await exportFeedback(purpose, withText, offset)
+      if (disposed || session !== messages.sessionVersion) return
+      samples.push(...page.samples)
+      if (!page.has_more) break
+      offset = page.offset + 100
+    }
+    const url = URL.createObjectURL(new Blob([JSON.stringify({ schema_version: 1, purpose, include_text: withText, exported_at: new Date().toISOString(), samples }, null, 2)], { type: 'application/json' }))
+    const link = document.createElement('a')
+    link.href = url; link.download = `privrelay-feedback-${Date.now()}.json`; link.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    exportDialog.value = false
+    ElMessage.success(`已导出 ${samples.length} 条样本`)
+  } catch { ElMessage.error('导出失败，请重试') }
+  finally { exporting.value = false }
+}
 
 async function load(): Promise<void> {
+  if (disposed) return
   const request = ++generation
+  refreshPending = false
   loading.value = true
   error.value = ''
   try {
@@ -104,7 +146,10 @@ async function load(): Promise<void> {
   } catch (e) {
     if (!disposed && request === generation) error.value = e instanceof ApiError ? errorText(e.code) : '加载失败，请重试'
   } finally {
-    if (!disposed && request === generation) loading.value = false
+    if (!disposed && request === generation) {
+      loading.value = false
+      if (refreshPending) void load()
+    }
   }
 }
 async function open(id: string): Promise<void> {
@@ -114,7 +159,7 @@ async function open(id: string): Promise<void> {
     if (disposed || request !== detailGeneration) return
     detail.value = message
     drawer.value = true
-  } catch { if (!disposed) ElMessage.error('加载短信失败，请重试') }
+  } catch { if (!disposed && request === detailGeneration) ElMessage.error('加载短信失败，请重试') }
 }
 async function review(id: string, status: 'approved' | 'rejected'): Promise<void> {
   if (reviewing.value) return
@@ -135,15 +180,31 @@ async function review(id: string, status: 'approved' | 'rejected'): Promise<void
     }
   } finally { reviewing.value = '' }
 }
-watch(filter, () => { if (page.value !== 1) page.value = 1; else void load() })
-watch(page, () => void load())
-watch(() => messages.refreshVersion, () => { if (!loading.value) void load() })
+watch(filter, () => { if (page.value !== 1) page.value = 1; else void load() }, { flush: 'sync' })
+watch(page, () => void load(), { flush: 'sync' })
+watch(() => messages.refreshVersion, () => {
+  if (messages.lastSyncAt === null) return
+  if (loading.value) refreshPending = true
+  else void load()
+})
+watch(() => messages.sessionVersion, () => {
+  result.value = null
+  detail.value = null
+  drawer.value = false
+  detailGeneration++
+  if (page.value !== 1) page.value = 1
+  else void load()
+}, { flush: 'sync' })
+
 void load()
 onScopeDispose(() => { disposed = true; generation++; detailGeneration++; result.value = null; detail.value = null })
 </script>
 
 <style scoped>
 .feedback-cards { display: none; }
+.export-options { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+.export-options :deep(.el-checkbox) { height: auto; align-items: flex-start; margin-right: 0; }
+.export-options :deep(.el-checkbox__label) { white-space: normal; line-height: 1.5; }
 @media (max-width: 600px) {
   .feedback-table { display: none; }
   .feedback-cards { display: grid; gap: 10px; overflow-wrap: anywhere; }

@@ -27,6 +27,9 @@
         <el-option value="quarantine" label="拦截" />
       </el-select>
 
+      <el-select v-model="archivedFilter" aria-label="归档状态" style="width: 130px">
+        <el-option value="false" label="未归档" /><el-option value="true" label="已归档" /><el-option value="all" label="全部归档状态" />
+      </el-select>
       <span class="toolbar-spacer" />
 
       <span class="muted">共 {{ total }} 条</span>
@@ -57,8 +60,10 @@
     <MessageDetailDrawer
       v-model="drawerVisible"
       :message="detail"
+      :allow-archive="true"
       @restore="detail && onRestore(detail)"
       @feedback="onFeedback"
+      @archive="onArchive"
     />
   </div>
 </template>
@@ -67,6 +72,7 @@
 import { ElMessage } from 'element-plus'
 import { ref } from 'vue'
 import { ApiError } from '../api/client'
+
 import type { Message } from '../api/types'
 import MessageDetailDrawer from '../components/MessageDetailDrawer.vue'
 import MessageTable from '../components/MessageTable.vue'
@@ -79,7 +85,7 @@ import { useMessageActions } from '../composables/useMessageActions'
 const messages = useMessagesStore()
 const actions = useMessageActions()
 
-const { keyword, categoryFilter, actionFilter, page, pageSize, rows, total, loading, error, reload } = useMessageSearch()
+const { keyword, categoryFilter, actionFilter, archivedFilter, page, pageSize, rows, total, loading, error, reload } = useMessageSearch()
 
 const drawerVisible = ref(false)
 const detail = ref<Message | null>(null)
@@ -103,6 +109,17 @@ async function onRestore(message: Message): Promise<void> {
   }
 }
 
+async function onArchive(): Promise<void> {
+  if (!detail.value) return
+  try {
+    const updated = await actions.archive(detail.value.message_id, !detail.value.archived)
+    if (detail.value?.message_id === updated.message_id) detail.value = updated
+    await reload()
+    void messages.pull().catch(() => {})
+    ElMessage.success(updated.archived ? '已归档' : '已取消归档')
+  } catch { ElMessage.error('归档操作失败，请重试') }
+}
+
 async function onFeedback(category: string): Promise<void> {
   if (!detail.value) {
     return
@@ -110,7 +127,7 @@ async function onFeedback(category: string): Promise<void> {
   try {
     await actions.feedback(detail.value.message_id, category)
     void messages.pull().catch(() => {})
-    ElMessage.success('纠错已提交至待审核队列，不会直接改变当前分类')
+    ElMessage.success('纠正类别已加密保存，原始模型预测保持不变')
   } catch (error) {
     ElMessage.error(error instanceof ApiError ? errorText(error.code) : '提交失败')
   }

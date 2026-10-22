@@ -64,7 +64,11 @@ void main() {
       await tester.tap(find.text('恢复到收件箱'));
       await tester.pumpAndSettle();
       expect((await db.find('test-marketing'))!.action, 'allow');
+      // Let the recovery snackbar leave the bottom action's hit target.
+      await tester.pump(const Duration(seconds: 5));
       await tester.ensureVisible(find.text('纠正分类'));
+      await tester.drag(find.byType(ListView).last, const Offset(0, -200));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('纠正分类'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('服务通知').last);
@@ -73,6 +77,7 @@ void main() {
       await tester.pumpAndSettle();
       expect((await db.select(db.operations).get()).length, 2);
       expect((await db.find('test-marketing'))!.category, 'marketing');
+      expect((await db.find('test-marketing'))!.correctedCategory, 'service');
       await tester.pumpWidget(const SizedBox());
       await db.close();
     },

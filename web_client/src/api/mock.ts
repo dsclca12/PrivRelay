@@ -300,16 +300,29 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
   }
 
   if (url.pathname === '/api/v1/messages/search' && method === 'GET') {
+    const archived = url.searchParams.get('archived') || 'false'
     const q = (url.searchParams.get('q') ?? '').toLowerCase()
     const category = url.searchParams.get('category')
     const action = url.searchParams.get('action')
     const device = url.searchParams.get('device_id')
     const offset = Number(url.searchParams.get('offset') ?? 0)
     const limit = Number(url.searchParams.get('limit') ?? 20)
-    const rows = s.messages.filter(m => (!category || m.category === category) && (!action || m.action === action) &&
+    const rows = s.messages.filter(m => (archived === 'all' || !!m.archived === (archived === 'true')) && (!category || m.category === category) && (!action || m.action === action) &&
       (!device || m.device_id === device) && (!q || m.sender.toLowerCase().includes(q) || m.body.toLowerCase().includes(q)))
       .sort((a, b) => b.received_at - a.received_at || a.message_id.localeCompare(b.message_id))
     return clone({ messages: rows.slice(offset, offset + limit), total: rows.length, offset, has_more: offset + limit < rows.length }) as T
+  }
+  if (url.pathname === '/api/v1/feedback/export' && method === 'POST') {
+    const input = body as { consent: boolean; purpose: string; include_text: boolean; offset: number; limit: number }
+    if (!input.consent || !['evaluation', 'training'].includes(input.purpose)) throw new Error('export_consent_required')
+    const rows = s.feedback.filter(f => f.review_status === 'approved').sort((a, b) => a.operation_id.localeCompare(b.operation_id))
+    const samples = rows.slice(input.offset, input.offset + input.limit).map(f => {
+      const message = s.messages.find(m => m.message_id === f.message_id)
+      return { operation_id: f.operation_id, message_id: f.message_id, label: f.corrected_category,
+        predicted_category: f.predicted_category, model_version: f.model_version, reviewed_at: f.reviewed_at,
+        ...(input.include_text && message ? { text: message.body, sender: message.sender } : {}) }
+    })
+    return clone({ schema_version: 1, samples, total: rows.length, offset: input.offset, has_more: input.offset + input.limit < rows.length }) as T
   }
   if (url.pathname === '/api/v1/feedback' && method === 'GET') {
     const status = url.searchParams.get('status')
@@ -357,6 +370,14 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
     return clone({ messages: page, cursor: nextCursor, has_more: hasMore }) as T
   }
 
+  const archiveMatch = url.pathname.match(/^\/api\/v1\/messages\/([^/]+)\/(archive|unarchive)$/)
+  if (archiveMatch && method === 'POST') {
+    const target = s.messages.find(m => m.message_id === decodeURIComponent(archiveMatch[1]!))
+    if (!target) return notFound()
+    const archived = archiveMatch[2] === 'archive'
+    if (!!target.archived !== archived) { target.archived = archived; target.revision = ++s.revision }
+    return clone(target) as T
+  }
   const restoreMatch = url.pathname.match(/^\/api\/v1\/messages\/([^/]+)\/restore$/)
   if (restoreMatch && method === 'POST') {
     const target = s.messages.find((m) => m.message_id === decodeURIComponent(restoreMatch[1]!))
@@ -364,6 +385,7 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
     target.action = 'allow'
     target.reason = '用户恢复'
     target.restored = true
+    target.archived = false
     target.revision = ++s.revision
     return clone(target) as T
   }

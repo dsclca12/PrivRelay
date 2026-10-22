@@ -4,6 +4,8 @@
 
 PrivRelay 保留原版 PrivateSMS-Classifier，并支持由用户配置的 OpenAI 兼容 Chat Completions API。**新安装时基础地址、模型和 API Key 均为空，LLM 默认关闭，不会自动连接 OpenAI 或其他提供商。**
 
+本文的服务端分类／隔离适用于旧明文消息协议。当前 Android／Web 配对使用 E2EE，服务器无法读取新短信，以下配置不会对这些密文生效；当前客户端也没有端侧模型。E2EE 详情可以显示迁移时保留的分类和来源，但不代表新消息已经分类。相关功能取舍见[端到端加密](END_TO_END_ENCRYPTION.md)。
+
 ## 配置与使用
 
 在 Web「规则配置」的「AI / LLM 自动分类」或 Android「设置 → AI / LLM 自动分类」中填写：

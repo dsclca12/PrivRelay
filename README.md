@@ -1,6 +1,6 @@
 # PrivRelay
 
-隐私优先、自托管的跨设备短信管理系统。Android 客户端接收新短信并加密保存在本机，通过 Go 服务同步，接入 [PrivateSMS-Classifier](https://github.com/dsclca12/PrivateSMS-Classifier) 进行分类，支持可选 OpenAI 兼容 LLM 自动分类、规则隔离、恢复和人工纠错。
+隐私优先、自托管的跨设备短信管理系统。Android 客户端接收新短信并加密保存在本机，通过端到端加密与 Go 服务同步；Web 和 Android 设备使用共享口令解密。服务端存储加密快照，并支持 HTTPS/TLS。E2EE 模式不向服务器分类器或 LLM 暴露短信正文，因此服务器端分类、全文搜索和纠错审核不可用；普通明文模式保留原有分类能力。详见[端到端加密说明](docs/END_TO_END_ENCRYPTION.md)。
 
 当前处于 **Android MVP 与后端联调阶段**，Web 控制台初版已交付，尚未完成生产稳定性和完整系统验收。
 
@@ -8,16 +8,16 @@
 
 | 模块 | 已实现 | 边界 |
 |---|---|---|
-| Android | Flutter / Kotlin、新短信接收、加密存储、离线队列、收件箱、隔离与恢复 | 非默认短信应用；不导入系统历史、不发送短信，不能抑制系统短信应用通知 |
+| Android | Flutter / Kotlin、新短信接收、加密存储、离线队列、收件箱、隔离与恢复、归档、设备密码应用锁 | 非默认短信应用；不导入系统历史、不发送短信，不能抑制系统短信应用通知 |
 | Go 服务 | 签名配对、消息同步与查询、规则、纠错、设备撤销、浏览器会话、WebSocket | 单用户、单进程、加密文件快照；尚无 PostgreSQL、多租户、多实例支持 |
 | AI 分类 | 原版 PrivateSMS-Classifier／INT8 模型；可配置 OpenAI 兼容 LLM 直接分类或复核；独立授权的自动隔离 | LLM 地址、模型、密钥默认空且关闭；分数未经校准；重要消息保护，失败正常保留，隔离可恢复 |
-| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、纠错审核、运行监控；管理台 API 与静态目录托管 | 浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
+| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、纠错审核、运行监控；管理台 API 与静态目录托管 | 归档与授权纠错样本导出；浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
 
-服务器、分类服务和主动配置的 LLM 接口能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
+首次配对 E2EE 设备会全局启用服务器 E2EE 模式并停用旧明文 API；Android 本地可访问的记录先加密迁移，未迁移的旧记录保留在服务器受存储加密保护的快照中，不会因浏览器配对或另一台手机完成迁移而删除。这些遗留记录尚未获得端到端保护，需要原设备迁移；当前客户端不具备端侧分类引擎，因此新 E2EE 消息不会自动分类／隔离。TLS 仍用于保护传输链路与令牌。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
 
 ## 快速开始
 
-以下 PowerShell 命令从仓库根目录开始。后端需要 Go 1.25 或兼容工具链；Android 需要根目录 [.fvmrc](.fvmrc) 指定的 Flutter 3.47.7、JDK 17 和 Android SDK；Web 控制台需要 Node.js 20 或更高版本。
+以下 PowerShell 命令从仓库根目录开始。后端需要 Go 1.25 或兼容工具链；Android 需要根目录 [.fvmrc](.fvmrc) 指定的 Flutter 3.47.7、JDK 17 和 Android SDK；Web 控制台需要 Node.js 22 或更高版本。
 
 ### 一起启动 Web 与后端（Windows）
 
@@ -25,7 +25,7 @@
 ./tools/start.ps1
 ```
 
-脚本使用 Python 3.13+（Windows，已测试 3.14）准备固定依赖并启动原版分类器，安装缺失的 Web 依赖、构建前后端，然后由 Go 在同一个地址提供网页和 API。打开 `http://127.0.0.1:8787`，用终端显示的一次性码登录。在设备中心填写手机可访问的 HTTPS 地址并生成二维码，安卓设置中点「扫码绑定服务器」，确认后同步；也支持手动输入配对码，无需重启服务。默认沿用 `server/data/privrelay.enc`；按 Ctrl+C 停止。
+脚本使用 Python 3.13+（Windows，已测试 3.14）准备固定依赖并启动原版分类器，安装缺失的 Web 依赖、构建前后端，然后由 Go 在同一个地址提供网页和 API。打开 `http://127.0.0.1:8787`，用终端显示的一次性码和至少 12 个可见 ASCII 字符的共享加密口令登录。在设备中心填写手机可访问的 HTTPS 地址并生成二维码，安卓设置填写相同共享口令后点「扫码绑定服务器」，确认后同步；也支持手动输入配对码，无需重启服务。默认沿用 `server/data/privrelay.enc`；按 Ctrl+C 停止。
 
 已有分类器时使用 `./tools/start.ps1 -Classifier http://127.0.0.1:18788`；`-WithoutClassifier` 可主动只保存、同步消息。Docker 执行 `docker compose up --build -d` 会一起构建网页、后端和分类器。
 
@@ -76,6 +76,8 @@ npm run dev
 浏览器打开终端提示的地址（默认 `http://localhost:5173`），用后端启动时显示的配对码配对，或粘贴访问令牌。开发服务器会把 `/api` 与 `/healthz` 代理到 `http://127.0.0.1:8787`，可用 `PRIVRELAY_API` 指向其他后端；设置 `VITE_MOCK=1` 可在没有后端时浏览演示数据。构建、同源部署和已知限制见 [Web 控制台说明](web_client/README.md)。
 
 ## AI / LLM 自动分类与拦截
+
+以下为旧明文消息协议能力；当前 E2EE 客户端不向服务端发送正文，也未实现端侧模型，因此不对新密文短信自动分类或隔离。
 
 在 Web 规则页或 Android「设置 → AI / LLM 自动分类」填写自己的兼容 API 地址、模型与密钥，选择直接分类或由轻量模型先处理、LLM 复核。所有连接配置默认留空，LLM 默认关闭。自动隔离需单独授权，并开启过滤／拦截模式；验证码、交易、安全内容、白名单与人工恢复优先保护。配置、测试及失败补偿见 [AI 分类说明](docs/AI_CLASSIFICATION.md)。
 

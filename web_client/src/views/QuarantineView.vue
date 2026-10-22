@@ -113,7 +113,7 @@ async function onFeedback(category: string): Promise<void> {
   try {
     await actions.feedback(detail.value.message_id, category)
     void messages.pull().catch(() => {})
-    ElMessage.success('纠错已提交至待审核队列，不会直接改变当前分类')
+    ElMessage.success('纠正类别已加密保存，原始模型预测保持不变')
   } catch (error) {
     ElMessage.error(error instanceof ApiError ? errorText(error.code) : '提交失败')
   }

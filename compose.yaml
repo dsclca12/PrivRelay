@@ -3,10 +3,11 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:${PRIVRELAY_PORT:-8787}:8787"
     environment:
       CLASSIFIER_URL: ${CLASSIFIER_URL:-http://classifier:8000}
       CLASSIFIER_API_KEY: ${CLASSIFIER_API_KEY:-}
+      PRIVRELAY_STORAGE_KEY: ${PRIVRELAY_STORAGE_KEY:-}
     volumes:
       - relay-data:/data
     security_opt:

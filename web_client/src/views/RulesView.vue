@@ -1,5 +1,6 @@
 <template>
   <div class="rules-form" v-loading="loading">
+    <el-alert type="info" :closable="false" show-icon title="端到端加密消息的正文仅在客户端解密。此处服务器分类器与 LLM 配置不会自动处理密文消息；规则配置保存不代表密文已完成服务端分类。" style="margin-bottom: 14px" />
     <div class="toolbar">
       <span class="muted">规则保存后对新到达的消息立即生效，不回溯已处理的历史消息。</span>
       <span class="toolbar-spacer" />

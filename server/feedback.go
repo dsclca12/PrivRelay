@@ -82,3 +82,52 @@ func (s *Server) reviewFeedback(w http.ResponseWriter, r *http.Request, d Device
 		s.broadcast()
 	}
 }
+
+// Export one bounded page at a time; approval alone never authorizes disclosure.
+func (s *Server) exportFeedback(w http.ResponseWriter, r *http.Request, d Device) {
+	var req struct {
+		Consent     bool   `json:"consent"`
+		Purpose     string `json:"purpose"`
+		IncludeText bool   `json:"include_text"`
+		Offset      int    `json:"offset"`
+		Limit       int    `json:"limit"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if !req.Consent || (req.Purpose != "evaluation" && req.Purpose != "training") || req.Offset < 0 || req.Limit < 1 || req.Limit > 100 {
+		writeJSON(w, 422, map[string]string{"error": "export_consent_required"})
+		return
+	}
+	rows := []Feedback{}
+	for _, f := range s.store.Feedback {
+		if f.Status == "approved" {
+			rows = append(rows, f)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	start := min(req.Offset, len(rows))
+	end := min(start+req.Limit, len(rows))
+	samples := []map[string]any{}
+	for _, f := range rows[start:end] {
+		row := map[string]any{"operation_id": f.ID, "message_id": f.MessageID, "label": f.Category, "predicted_category": f.Predicted, "model_version": f.Model, "reviewed_at": f.ReviewedAt}
+		if req.IncludeText {
+			m, ok := s.store.Messages[f.MessageID]
+			if !ok {
+				continue
+			}
+			row["text"] = m.Body
+			row["sender"] = m.Sender
+		}
+		samples = append(samples, row)
+	}
+	// Record consent metadata only; never duplicate message text or credentials.
+	before := s.snapshot()
+	s.store.Exports = append(s.store.Exports, ExportAudit{Device: d.ID, At: time.Now().Unix(), Purpose: req.Purpose, IncludeText: req.IncludeText, Count: len(samples)})
+	if len(s.store.Exports) > 1000 {
+		s.store.Exports = s.store.Exports[len(s.store.Exports)-1000:]
+	}
+	if s.commit(w, before) {
+		writeJSON(w, 200, map[string]any{"schema_version": 1, "samples": samples, "total": len(rows), "offset": start, "has_more": end < len(rows), "purpose": req.Purpose, "include_text": req.IncludeText})
+	}
+}

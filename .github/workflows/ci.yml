@@ -33,6 +33,7 @@ jobs:
       - run: mkdir -p ../artifacts && go build -trimpath -o ../artifacts/privrelay-server .
         working-directory: server
       - run: node tools/smoke_web.mjs
+      - run: python3 tools/verify.py --help && python3 tools/build_release.py --help
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -60,6 +61,11 @@ jobs:
         working-directory: android_client
       - run: bash gradlew :app:testDevDebugUnitTest
         working-directory: android_client/android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-dev-debug
+          path: android_client/build/app/outputs/flutter-apk/app-dev-debug.apk
+          retention-days: 7
   containers:
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -80,3 +86,4 @@ jobs:
           trap 'docker compose down --volumes' EXIT
           docker compose up -d --wait --wait-timeout 240
           node tools/smoke_compose.mjs
+          docker compose exec -T classifier python -m pytest /app/upstream/tests -q -p no:cacheprovider

@@ -117,6 +117,14 @@ class _AISettingsPageState extends ConsumerState<AISettingsPage> {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
+        const Card(
+          child: Padding(
+            padding: EdgeInsets.all(16),
+            child: Text(
+              '当前 Android 使用端到端加密同步，服务器无法读取或分类密文短信。以下配置只对旧版明文客户端生效，不会对本机加密消息启用 AI 分类或自动隔离。',
+            ),
+          ),
+        ),
         Text('AI / LLM 自动分类', style: Theme.of(context).textTheme.titleLarge),
         const SizedBox(height: 16),
         DropdownButtonFormField<String>(

@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import {
   clearSession,
   clearToken,
+  ApiError,
   getDeviceId,
   getDeviceName,
   getToken,
@@ -11,10 +12,11 @@ import {
   setDeviceName,
   setToken,
 } from '../api/client'
-import { createSession, deleteSession, getSession, registerDevice } from '../api/endpoints'
+import { createSession, deleteSession, getSession, getVaultParams, listMessages, registerDevice } from '../api/endpoints'
 import router from '../router'
 import { buildPairingRequest } from '../utils/pairing'
 import { useMessagesStore } from './messages'
+import { clearVaultCredentials, hasVaultCredentials, setVaultCredentials, vaultGeneration } from '../utils/vault'
 
 /** 服务端错误码 → 中文提示 */
 const ERROR_TEXT: Record<string, string> = {
@@ -37,57 +39,121 @@ export const useAuthStore = defineStore('auth', () => {
   const deviceId = ref(getDeviceId())
   const deviceName = ref(getDeviceName())
   let pendingPairToken: string | null = null
+  let pendingVaultPassphrase = ''
+  let authenticationGeneration = 0
+  let loginPending = false
   const authenticated = ref(false)
   const paired = computed(() => authenticated.value)
 
   /** 使用服务端控制台输出的一次性配对码注册本浏览器 */
-  async function pair(pairingCode: string, name: string): Promise<void> {
+  async function pair(pairingCode: string, name: string, passphrase: string): Promise<void> {
     if (pendingPairToken) {
-      await useToken(pendingPairToken)
+      pendingVaultPassphrase = passphrase
+      await useToken(pendingPairToken, '', pendingVaultPassphrase)
       pendingPairToken = null
+      pendingVaultPassphrase = ''
       return
     }
+    const phrase = passphrase.trim()
+    if (phrase.length < 12 || [...phrase].some((c) => c.charCodeAt(0) < 33 || c.charCodeAt(0) > 126)) throw new Error('端到端加密口令至少 12 个字符，且只能包含可见 ASCII 字符')
     const request = await buildPairingRequest({ pairingCode, deviceName: name })
     const response = await registerDevice(request)
     // Keep the returned token in memory until session creation succeeds, so a
     // transient failure can be retried without consuming another pairing code.
     pendingPairToken = response.token
+    pendingVaultPassphrase = passphrase
     setToken(response.token)
-    await useToken(response.token, response.device_id)
+    await useToken(response.token, response.device_id, passphrase)
     pendingPairToken = null
+    pendingVaultPassphrase = ''
   }
 
-  async function useToken(rawToken: string, _id = ''): Promise<void> {
-    setToken(rawToken.trim())
-    await createSession()
-    const session = await getSession()
-    deviceId.value = session.device_id
-    deviceName.value = session.name
-    setDeviceId(session.device_id)
-    setDeviceName(session.name)
-    clearToken()
-    token.value = ''
+  async function useToken(rawToken: string, _id = '', passphrase?: string): Promise<void> {
+    if (loginPending) throw new Error('正在验证登录，请稍候')
+    loginPending = true
+    const attempt = ++authenticationGeneration
+    const checkAttempt = () => { if (attempt !== authenticationGeneration) throw new Error('登录会话已变更，请重试') }
+    authenticated.value = false
+    clearVaultCredentials()
     useMessagesStore().$reset()
-    authenticated.value = true
+    try {
+      setToken(rawToken.trim())
+      await createSession()
+      checkAttempt()
+      const session = await getSession()
+      checkAttempt()
+      const vaultPhrase = passphrase ?? window.prompt('输入端到端加密口令（至少 12 个字符）') ?? ''
+      const params = await getVaultParams()
+      checkAttempt()
+      setVaultCredentials(vaultPhrase, params)
+      await verifyVaultCredentials()
+      checkAttempt()
+      deviceId.value = session.device_id
+      deviceName.value = session.name
+      setDeviceId(session.device_id)
+      setDeviceName(session.name)
+      clearToken()
+      token.value = ''
+      useMessagesStore().$reset()
+      authenticated.value = true
+    } catch (error) {
+      if (attempt === authenticationGeneration) {
+        clearVaultCredentials()
+        authenticated.value = false
+      }
+      throw error
+    } finally { loginPending = false }
+  }
+
+  async function verifyVaultCredentials(): Promise<void> {
+    const session = vaultGeneration()
+    try {
+      // listMessages authenticates and decrypts the first existing ciphertext.
+      // An empty vault has no record against which to verify a first key.
+      await listMessages(0, 1)
+      if (session !== vaultGeneration()) throw new Error('vault_session_changed')
+    } catch (error) {
+      if (session === vaultGeneration()) clearVaultCredentials()
+      if (error instanceof ApiError) throw error
+      throw new Error('端到端加密口令与已有消息不匹配，或加密记录已损坏，请检查共享口令后重试')
+    }
   }
 
   async function restore(): Promise<boolean> {
+    if (loginPending) return false
+    if (getToken()) {
+      try { await useToken(getToken()!); return true } catch { return false }
+    }
+    const attempt = ++authenticationGeneration
     try {
-      if (getToken()) await useToken(getToken()!)
       const session = await getSession()
+      if (attempt !== authenticationGeneration) return false
+      if (!hasVaultCredentials()) {
+        const phrase = window.prompt('输入端到端加密口令（至少 12 个字符）')
+        if (!phrase) return false
+        const params = await getVaultParams()
+        if (attempt !== authenticationGeneration) return false
+        setVaultCredentials(phrase, params)
+        await verifyVaultCredentials()
+      }
+      if (attempt !== authenticationGeneration) return false
       deviceId.value = session.device_id
       deviceName.value = session.name
       authenticated.value = true
       return true
     } catch {
-      clearToken()
-      authenticated.value = false
+      if (attempt === authenticationGeneration) {
+        clearToken()
+        clearVaultCredentials()
+        authenticated.value = false
+      }
       return false
     }
   }
 
   /** 退出登录（保留服务端数据，仅清除本浏览器会话） */
   async function logout(options: { expired?: boolean } = {}): Promise<void> {
+    authenticationGeneration++
     if (!options.expired) {
       try { await deleteSession() } catch {
         ElMessage.error('退出失败，请检查连接后重试')
@@ -95,12 +161,14 @@ export const useAuthStore = defineStore('auth', () => {
       }
     }
     pendingPairToken = null
+    pendingVaultPassphrase = ''
     useMessagesStore().$reset()
     authenticated.value = false
     token.value = ''
     deviceId.value = ''
     deviceName.value = ''
     clearSession()
+    clearVaultCredentials()
     if (options.expired) {
       ElMessage.warning('访问令牌已失效，请重新配对本浏览器')
     }

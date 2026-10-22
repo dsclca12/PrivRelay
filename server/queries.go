@@ -23,9 +23,18 @@ func (s *Server) searchMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "query_contract"})
 		return
 	}
+	archived := q.Get("archived")
+	if archived != "" && archived != "true" && archived != "false" && archived != "all" {
+		writeJSON(w, 400, map[string]string{"error": "query_contract"})
+		return
+	}
 	needle := strings.ToLower(q.Get("q"))
 	rows := []Message{}
 	for _, m := range s.store.Messages {
+		// Quarantine always remains visible, including archived quarantine records.
+		if r.URL.Path != "/api/v1/filter/quarantine" && archived != "all" && m.Archived != (archived == "true") {
+			continue
+		}
 		if category != "" && m.Category != category || action != "" && m.Action != action || device != "" && m.Device != device {
 			continue
 		}
@@ -100,7 +109,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			pendingFeedback++
 		}
 	}
-	writeJSON(w, 200, map[string]any{"messages": len(s.store.Messages), "quarantined": quarantined, "restored": restored, "quarantine_reasons": reasons,
+	writeJSON(w, 200, map[string]any{"messages": len(s.store.Messages) + len(s.store.EncryptedMessages), "encrypted_messages": len(s.store.EncryptedMessages), "e2ee_enabled": s.store.E2EEEnabled, "quarantined": quarantined, "restored": restored, "quarantine_reasons": reasons,
 		"pending_classification": pending, "categories": counts, "authorized_devices": active,
 		"connected_devices": online, "pending_feedback": pendingFeedback, "revision": s.store.Revision,
 		"llm_mode": defaultString(s.store.LLM.Mode, "disabled"), "pending_llm_review": pendingLLM, "classifier_configured": s.classifier != "", "server_time": now})

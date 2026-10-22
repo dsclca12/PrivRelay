@@ -1,5 +1,5 @@
 import { onScopeDispose } from 'vue'
-import { restoreMessage, sendFeedback } from '../api/endpoints'
+import { archiveMessage, restoreMessage, sendFeedback } from '../api/endpoints'
 import { uuid } from '../utils/uuid'
 
 /** Retain the idempotency key when the server may have saved a lost response. */
@@ -27,6 +27,7 @@ export function useMessageActions() {
   onScopeDispose(() => { disposed = true; operations.clear() })
   return {
     restore: (messageId: string) => run(`restore:${messageId}`, id => restoreMessage(messageId, id)),
+    archive: (messageId: string, archived: boolean) => run(`archive:${messageId}:${archived}`, id => archiveMessage(messageId, archived, id)),
     feedback: (messageId: string, category: string) => run(`feedback:${messageId}:${category}`, id => sendFeedback(messageId, id, category)),
   }
 }
