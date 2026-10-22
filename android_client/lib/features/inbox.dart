@@ -292,6 +292,29 @@ class DetailPage extends ConsumerWidget {
               ),
               ListTile(
                 contentPadding: EdgeInsets.zero,
+                title: const Text('分类来源'),
+                subtitle: Text(
+                  '${switch (m.classificationSource) {
+                    'llm' => 'AI / LLM',
+                    'privatesms' => '轻量分类器',
+                    '' => '尚未返回来源',
+                    final source => source,
+                  }}${m.llmPending ? ' · 等待 LLM 复核' : ''}',
+                ),
+              ),
+              if (m.primaryClassification case final primary?)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('轻量模型原始结果'),
+                  subtitle: Text(
+                    '${categories[primary['category']] ?? primary['category']} · ${primary['model_version']}\n'
+                    '置信度 ${((primary['confidence'] as num) * 100).toStringAsFixed(1)}% · '
+                    '风险 ${((primary['spam_score'] as num) * 100).toStringAsFixed(1)}%\n'
+                    '${primary['needs_review'] == true ? '模型建议人工复核' : '模型已返回结果'}',
+                  ),
+                ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
                 title: const Text('模型版本'),
                 subtitle: Text(
                   m.modelVersion.isEmpty ? '尚未分类' : m.modelVersion,

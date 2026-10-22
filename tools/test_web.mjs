@@ -12,7 +12,7 @@ await mkdir(path.join(root, 'artifacts'), { recursive: true })
 const directory = await mkdtemp(path.join(root, 'artifacts/web-state-'))
 const bundle = path.join(directory, 'tests.mjs')
 await build({
-  stdin: { contents: `export * from './src/composables/useMessageSearch'; export * from './src/stores/messages'; export { effectScope, nextTick } from 'vue'; export { createPinia, setActivePinia } from 'pinia'`, resolveDir: path.join(root, 'web_client') },
+  stdin: { contents: `export * from './src/composables/useMessageSearch'; export * from './src/composables/useMessageActions'; export * from './src/stores/messages'; export { effectScope, nextTick } from 'vue'; export { createPinia, setActivePinia } from 'pinia'`, resolveDir: path.join(root, 'web_client') },
   bundle: true, platform: 'node', format: 'esm', outfile: bundle, define: { 'import.meta.env': '{}' },
 })
 globalThis.localStorage = { getItem: () => null }
@@ -90,4 +90,57 @@ try {
   assert.equal(failed.rows.value.length, 1)
   errorScope.stop()
   console.log('PASS network failure and explicit retry')
+
+  const slowScope = api.effectScope()
+  const slow = slowScope.run(() => api.useMessageSearch())
+  const slowRequest = requests.shift()
+  messages.refreshVersion++
+  await api.nextTick()
+  await delay(10)
+  assert.equal(requests.length, 0, 'background polls must not replace a pending query')
+  slowRequest.resolve(result(['slow-valid-response']))
+  await until(() => !slow.loading.value)
+  assert.equal(slow.rows.value[0].message_id, 'slow-valid-response', 'a response spanning a poll interval must be displayed')
+  messages.refreshVersion++
+  await api.nextTick()
+  await until(() => requests.length === 1)
+  requests.shift().resolve(result(['next-poll']))
+  await until(() => !slow.loading.value)
+  assert.equal(slow.rows.value[0].message_id, 'next-poll')
+  slowScope.stop()
+  console.log('PASS slow searches survive periodic background refresh')
+
+  const actionScope = api.effectScope()
+  const actions = actionScope.run(() => api.useMessageActions())
+  const firstFeedback = actions.feedback('synthetic-message', 'service').catch(error => error)
+  const duplicateFeedback = actions.feedback('synthetic-message', 'service').catch(error => error)
+  assert.equal(requests.length, 1, 'concurrent clicks must share one request')
+  const lostFeedback = requests.shift()
+  const operationId = JSON.parse(lostFeedback.options.body).operation_id
+  lostFeedback.reject(new Error('response lost after server commit'))
+  await Promise.all([firstFeedback, duplicateFeedback])
+  const retriedFeedback = actions.feedback('synthetic-message', 'service')
+  const retryFeedbackRequest = requests.shift()
+  assert.equal(JSON.parse(retryFeedbackRequest.options.body).operation_id, operationId, 'uncertain feedback retries reuse the operation key')
+  retryFeedbackRequest.resolve({ status: 'pending_review' })
+  await retriedFeedback
+  const nextFeedback = actions.feedback('synthetic-message', 'service')
+  const nextFeedbackRequest = requests.shift()
+  assert.notEqual(JSON.parse(nextFeedbackRequest.options.body).operation_id, operationId, 'a new deliberate operation after success has a new key')
+  nextFeedbackRequest.resolve({ status: 'pending_review' })
+  await nextFeedback
+  const firstRestore = actions.restore('synthetic-message').catch(error => error)
+  const lostRestore = requests.shift()
+  const restoreId = JSON.parse(lostRestore.options.body).operation_id
+  lostRestore.reject(new Error('restore response lost'))
+  await firstRestore
+  const retriedRestore = actions.restore('synthetic-message')
+  const restoreRequest = requests.shift()
+  assert.equal(JSON.parse(restoreRequest.options.body).operation_id, restoreId)
+  restoreRequest.resolve(row('synthetic-message'))
+  await retriedRestore
+  actionScope.stop()
+  await assert.rejects(actions.restore('synthetic-message'), /disposed/)
+  assert.equal(requests.length, 0)
+  console.log('PASS feedback and restore concurrent clicks, uncertain retries and disposal')
 } finally { globalThis.fetch = realFetch }

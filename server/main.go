@@ -307,7 +307,7 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 	classificationContext, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
 	for _, incoming := range req.Messages {
-		m, exists := s.store.Messages[incoming.ID]
+		m, exists := s.store.Messages[s.store.messageID(incoming.ID)]
 		if exists && (m.Device != d.ID || m.Sender != incoming.Sender || m.Body != incoming.Body || m.Received != incoming.Received || m.Subscription != incoming.Subscription) {
 			s.rollback(before)
 			writeJSON(w, 409, map[string]string{"error": "id_conflict"})
@@ -323,6 +323,12 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 					break
 				}
 			}
+		}
+		if exists && incoming.ID != m.ID {
+			if s.store.MessageAliases == nil {
+				s.store.MessageAliases = map[string]string{}
+			}
+			s.store.MessageAliases[incoming.ID] = m.ID
 		}
 		if !exists || !m.Classified {
 			var c Classification
@@ -388,7 +394,7 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	m, ok := s.store.Messages[parts[0]]
+	m, ok := s.store.Messages[s.store.messageID(parts[0])]
 	if !ok {
 		http.NotFound(w, r)
 		return

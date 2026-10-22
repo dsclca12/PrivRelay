@@ -143,13 +143,19 @@ func (s *Server) classifyLLM(ctx context.Context, m Message) (Classification, bo
 			return Classification{}, false
 		}
 	}
-	var c Classification
-	var extra struct {
-		Reason string `json:"reason"`
+	// Decode only model-owned fields. Provenance and calibration are assigned
+	// locally; a model cannot manufacture an upstream result or calibrated score.
+	var output struct {
+		Category   string  `json:"category"`
+		Confidence float64 `json:"confidence"`
+		Risk       float64 `json:"spam_score"`
+		Review     bool    `json:"needs_review"`
+		Reason     string  `json:"reason"`
 	}
-	if json.Unmarshal([]byte(content), &c) != nil || json.Unmarshal([]byte(content), &extra) != nil || strings.TrimSpace(extra.Reason) == "" || len(extra.Reason) > 512 {
+	if json.Unmarshal([]byte(content), &output) != nil || strings.TrimSpace(output.Reason) == "" || len(output.Reason) > 512 {
 		return Classification{}, false
 	}
+	c := Classification{Category: output.Category, Confidence: output.Confidence, Risk: output.Risk, Review: output.Review}
 	c.Model = "llm:" + cfg.Model
 	c.Source = "llm"
 	if !validClassification(c) {

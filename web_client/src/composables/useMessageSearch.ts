@@ -62,7 +62,9 @@ export function useMessageSearch(action = '') {
     schedule(250)
   }, { flush: 'sync' })
   watch(page, () => schedule(), { flush: 'sync' })
-  watch(() => messages.refreshVersion, () => schedule())
+  // Polling must not continually supersede a slow, otherwise valid query.
+  // Filter/page changes still invalidate it immediately through their watchers.
+  watch(() => messages.refreshVersion, () => { if (!loading.value) schedule() })
   void reload()
   onScopeDispose(() => {
     disposed = true

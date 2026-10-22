@@ -271,6 +271,7 @@ class RelayRepository extends ChangeNotifier {
               .get();
       if (batch.isNotEmpty) {
         final ids = batch.map((e) => e.id).toList();
+        final acknowledged = <SmsMessage>[];
         await (db.update(db.messages)..where((t) => t.id.isIn(ids))).write(
           const MessagesCompanion(state: Value('uploading')),
         );
@@ -285,18 +286,23 @@ class RelayRepository extends ChangeNotifier {
           final acked = <String>{};
           for (final item in (response.data as Map)['messages'] as List) {
             final m = SmsMessage.fromJson(Map<String, dynamic>.from(item));
-            if (ids.contains(m.id)) {
-              await db.saveRemote(m);
-              acked.add(m.id);
-              if (m.action == 'allow') await notifyMessage(m);
+            if (ids.contains(m.id) && acked.add(m.id)) {
+              acknowledged.add(m);
             }
           }
-          for (final row in batch.where((e) => !acked.contains(e.id))) {
-            await fail(row);
-          }
-          if (acked.isNotEmpty) {
-            await db.setPref('last_ack', DateTime.now().toIso8601String());
-          }
+          // Validate the entire response before replacing any original message.
+          // Local ACKs commit together; notification failures must never undo them.
+          await db.transaction(() async {
+            for (final message in acknowledged) {
+              await db.saveRemote(message);
+            }
+            for (final row in batch.where((e) => !acked.contains(e.id))) {
+              await fail(row);
+            }
+            if (acked.isNotEmpty) {
+              await db.setPref('last_ack', DateTime.now().toIso8601String());
+            }
+          });
         } catch (e) {
           final status = e is DioException ? e.response?.statusCode : null;
           final permanent =
@@ -318,6 +324,9 @@ class RelayRepository extends ChangeNotifier {
             await notifyMessage(db.decode(row));
           }
           rethrow;
+        }
+        for (final message in acknowledged) {
+          await notifyMessage(message);
         }
       }
       await flushOperations(now);

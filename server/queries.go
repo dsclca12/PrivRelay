@@ -50,7 +50,7 @@ func (s *Server) searchMessages(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) messageDetail(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/messages/")
-	m, ok := s.store.Messages[id]
+	m, ok := s.store.Messages[s.store.messageID(id)]
 	if !ok {
 		writeJSON(w, 404, map[string]string{"error": "message_not_found"})
 		return

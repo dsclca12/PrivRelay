@@ -136,7 +136,8 @@ async function review(id: string, status: 'approved' | 'rejected'): Promise<void
   } finally { reviewing.value = '' }
 }
 watch(filter, () => { if (page.value !== 1) page.value = 1; else void load() })
-watch([page, () => messages.refreshVersion], () => void load())
+watch(page, () => void load())
+watch(() => messages.refreshVersion, () => { if (!loading.value) void load() })
 void load()
 onScopeDispose(() => { disposed = true; generation++; detailGeneration++; result.value = null; detail.value = null })
 </script>

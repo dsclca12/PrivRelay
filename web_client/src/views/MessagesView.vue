@@ -67,7 +67,6 @@
 import { ElMessage } from 'element-plus'
 import { ref } from 'vue'
 import { ApiError } from '../api/client'
-import { restoreMessage, sendFeedback } from '../api/endpoints'
 import type { Message } from '../api/types'
 import MessageDetailDrawer from '../components/MessageDetailDrawer.vue'
 import MessageTable from '../components/MessageTable.vue'
@@ -75,9 +74,10 @@ import { errorText } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
 import { useMessageSearch } from '../composables/useMessageSearch'
 import { CATEGORY_OPTIONS } from '../utils/format'
-import { uuid } from '../utils/uuid'
+import { useMessageActions } from '../composables/useMessageActions'
 
 const messages = useMessagesStore()
+const actions = useMessageActions()
 
 const { keyword, categoryFilter, actionFilter, page, pageSize, rows, total, loading, error, reload } = useMessageSearch()
 
@@ -91,7 +91,7 @@ function openDetail(message: Message): void {
 
 async function onRestore(message: Message): Promise<void> {
   try {
-    const updated = await restoreMessage(message.message_id, uuid())
+    const updated = await actions.restore(message.message_id)
     void messages.pull().catch(() => {})
     await reload()
     if (detail.value?.message_id === updated.message_id) {
@@ -108,7 +108,7 @@ async function onFeedback(category: string): Promise<void> {
     return
   }
   try {
-    await sendFeedback(detail.value.message_id, uuid(), category)
+    await actions.feedback(detail.value.message_id, category)
     void messages.pull().catch(() => {})
     ElMessage.success('纠错已提交至待审核队列，不会直接改变当前分类')
   } catch (error) {

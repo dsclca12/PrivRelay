@@ -60,14 +60,23 @@ type Feedback struct {
 	ReviewedAt int64  `json:"reviewed_at,omitempty"`
 }
 type Store struct {
-	LLM      LLMSettings         `json:"llm"`
-	Messages map[string]Message  `json:"messages"`
-	Devices  map[string]Device   `json:"devices"`
-	Feedback map[string]Feedback `json:"feedback"`
-	Rules    Rules               `json:"rules"`
-	Revision int64               `json:"revision"`
-	path     string
-	key      []byte
+	LLM      LLMSettings        `json:"llm"`
+	Messages map[string]Message `json:"messages"`
+	// Transport IDs deduplicated to an existing message remain reserved across retries.
+	MessageAliases map[string]string   `json:"message_aliases,omitempty"`
+	Devices        map[string]Device   `json:"devices"`
+	Feedback       map[string]Feedback `json:"feedback"`
+	Rules          Rules               `json:"rules"`
+	Revision       int64               `json:"revision"`
+	path           string
+	key            []byte
+}
+
+func (s *Store) messageID(id string) string {
+	if canonical, ok := s.MessageAliases[id]; ok {
+		return canonical
+	}
+	return id
 }
 
 func openStore(path string) (*Store, error) {

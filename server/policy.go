@@ -149,7 +149,7 @@ func applyPolicy(m Message, c Classification, ok bool, r Rules) Message {
 	if r.Mode == "classify" {
 		return m
 	}
-	if c.Category == "otp" || c.Category == "transaction" || protectedContent.MatchString(m.Body) {
+	if importantCategory(c.Category) || (c.Primary != nil && importantCategory(c.Primary.Category)) || protectedContent.MatchString(m.Body) {
 		m.Reason = "重要短信保护"
 		return m
 	}
@@ -184,5 +184,7 @@ func applyPolicy(m Message, c Classification, ok bool, r Rules) Message {
 	}
 	return m
 }
+
+func importantCategory(category string) bool { return category == "otp" || category == "transaction" }
 
 var protectedContent = regexp.MustCompile(`(?i)(验证码|校验码|动态码|验证代码|安全码|转账|扣款|交易提醒|账户安全|verification code|security code|one.time password|\botp\b|payment confirmation|transaction alert)`)

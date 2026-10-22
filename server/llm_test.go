@@ -236,3 +236,48 @@ func TestLLMClearKeyAndUnchangedFallback(t *testing.T) {
 		t.Fatal("explicit key removal failed")
 	}
 }
+
+func TestLLMFallbackPreservesImportantPrimaryCategory(t *testing.T) {
+	for _, category := range []string{"otp", "transaction"} {
+		t.Run(category, func(t *testing.T) {
+			s, _ := fixture(t)
+			primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				serveClassification(w, r, Classification{Category: category, Confidence: 0.9, Review: true, Model: "preview"})
+			}))
+			defer primary.Close()
+			llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				llmReply(w, marketingJSON, "stop")
+			}))
+			defer llm.Close()
+			s.classifier = primary.URL
+			s.store.LLM = LLMSettings{Mode: "fallback", BaseURL: llm.URL, Model: "test", AutoQuarantine: true}
+			m := testMessage()
+			// No keyword match: protection comes from the primary category.
+			m.Body = "Synthetic: 123456"
+			c, ok := s.classify(m)
+			if !ok || c.Primary == nil || c.Primary.Category != category || c.Decision.Action != "block" {
+				t.Fatal("fallback fixture did not reach the conflicting decision", c, ok)
+			}
+			for _, mode := range []string{"filter", "block"} {
+				result := applyPolicy(m, c, true, Rules{Mode: mode, Blacklist: []string{m.Sender}})
+				if result.Action != "allow" || result.Reason != "重要短信保护" {
+					t.Fatal("LLM or blacklist overrode primary protection", result)
+				}
+			}
+		})
+	}
+}
+
+func TestLLMCannotForgeProvenance(t *testing.T) {
+	s, _ := fixture(t)
+	content := strings.TrimSuffix(marketingJSON, "}") + `,"confidence_calibrated":true,"primary_classification":{"category":"personal","model_version":"forged"}}`
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmReply(w, content, "stop")
+	}))
+	defer llm.Close()
+	s.store.LLM = LLMSettings{Mode: "primary", BaseURL: llm.URL, Model: "test"}
+	c, ok := s.classify(testMessage())
+	if !ok || c.Calibrated || c.Primary != nil || c.Source != "llm" {
+		t.Fatal("model forged trusted provenance", c, ok)
+	}
+}

@@ -34,6 +34,37 @@ void main() {
     );
   });
   test(
+    'LLM provenance and primary classification survive database round trips',
+    () async {
+      final data = msg('llm').toJson()
+        ..['classification_source'] = 'llm'
+        ..['llm_pending'] = true
+        ..['primary_classification'] = {
+          'category': 'marketing',
+          'confidence': 0.7,
+          'spam_score': 0.8,
+          'needs_review': true,
+          'confidence_calibrated': false,
+          'model_version': 'preview',
+        };
+      await db.saveRemote(SmsMessage.fromJson(data));
+      final saved = (await db.find('llm'))!;
+      expect(saved.classificationSource, 'llm');
+      expect(saved.llmPending, isTrue);
+      expect(
+        saved.toJson()['primary_classification'],
+        data['primary_classification'],
+      );
+      expect(
+        () => SmsMessage.fromJson({
+          ...data,
+          'primary_classification': {'category': 'marketing'},
+        }),
+        throwsFormatException,
+      );
+    },
+  );
+  test(
     'spool replay is idempotent and a rolled back batch can retry',
     () async {
       await db.ingest([msg('m1'), msg('m1')]);

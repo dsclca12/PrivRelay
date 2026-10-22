@@ -16,10 +16,12 @@ class SmsMessage {
       action,
       reason,
       modelVersion,
+      classificationSource,
       syncState;
   final int receivedAt, subscriptionId, slot;
   final double confidence, risk;
-  final bool needsReview;
+  final bool needsReview, llmPending;
+  final Map<String, dynamic>? primaryClassification;
   const SmsMessage({
     required this.id,
     required this.sender,
@@ -31,6 +33,9 @@ class SmsMessage {
     this.action = 'allow',
     this.reason = '等待分类',
     this.modelVersion = '',
+    this.classificationSource = '',
+    this.llmPending = false,
+    this.primaryClassification,
     this.syncState = 'pending',
     this.confidence = 0,
     this.risk = 0,
@@ -52,6 +57,22 @@ class SmsMessage {
         risk > 1) {
       throw const FormatException('Invalid message contract');
     }
+    final primary = j['primary_classification'];
+    if (primary != null) {
+      if (primary is! Map ||
+          !categories.containsKey(primary['category']) ||
+          primary['model_version'] is! String ||
+          primary['confidence'] is! num ||
+          primary['spam_score'] is! num ||
+          !(primary['confidence'] as num).isFinite ||
+          !(primary['spam_score'] as num).isFinite ||
+          (primary['confidence'] as num) < 0 ||
+          (primary['confidence'] as num) > 1 ||
+          (primary['spam_score'] as num) < 0 ||
+          (primary['spam_score'] as num) > 1) {
+        throw const FormatException('Invalid primary classification');
+      }
+    }
     return SmsMessage(
       id: j['message_id'] as String,
       sender: j['sender'] as String,
@@ -63,6 +84,13 @@ class SmsMessage {
       action: action,
       reason: j['reason'] as String? ?? '等待分类',
       modelVersion: j['model_version'] as String? ?? '',
+      classificationSource: j['classification_source'] as String? ?? '',
+      llmPending: j['llm_pending'] as bool? ?? false,
+      primaryClassification: j['primary_classification'] == null
+          ? null
+          : Map<String, dynamic>.unmodifiable(
+              j['primary_classification'] as Map,
+            ),
       syncState: j['sync_state'] as String? ?? 'pending',
       confidence: confidence,
       risk: risk,
@@ -80,6 +108,10 @@ class SmsMessage {
     'action': action,
     'reason': reason,
     'model_version': modelVersion,
+    'classification_source': classificationSource,
+    'llm_pending': llmPending,
+    if (primaryClassification != null)
+      'primary_classification': primaryClassification,
     'sync_state': syncState,
     'confidence': confidence,
     'risk': risk,
