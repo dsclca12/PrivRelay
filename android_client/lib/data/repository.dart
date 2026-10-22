@@ -64,6 +64,7 @@ class RelayRepository extends ChangeNotifier {
              ),
            );
   String server = '', deviceId = '', state = '本地模式', error = '';
+  String? vaultPassphrase, vaultSalt;
   String? token;
   bool hidePreviews = false, screenProtection = true;
   bool appLockEnabled = false, appUnlocked = false, authenticating = false;
@@ -117,6 +118,8 @@ class RelayRepository extends ChangeNotifier {
     server =
         await db.pref('server') ?? const String.fromEnvironment('SERVER_URL');
     token = await secure.read(key: 'token');
+    vaultPassphrase = await secure.read(key: 'vault_passphrase');
+    vaultSalt = await secure.read(key: 'vault_salt');
     deviceId = (await platform.identity())['device_id'] as String;
     onboarded = await db.pref('onboarded') == 'true';
     rePair = await db.pref('re_pair') == 'true';
@@ -175,6 +178,17 @@ class RelayRepository extends ChangeNotifier {
     changed();
   }
 
+  Future<void> setVaultPassphrase(String value) async {
+    final normalized = value.trim();
+    if (normalized.length < 12 ||
+        normalized.runes.any((r) => r < 33 || r > 126)) {
+      throw const FormatException('端到端加密口令至少 12 个字符，且只能包含可见 ASCII 字符');
+    }
+    await secure.write(key: 'vault_passphrase', value: normalized);
+    vaultPassphrase = normalized;
+    changed();
+  }
+
   Future<void> requestSms() async {
     await platform.requestSms();
     permissions = await platform.status();
@@ -206,6 +220,9 @@ class RelayRepository extends ChangeNotifier {
       );
       final pairingCode = code.trim();
       if (pairingCode.isEmpty) throw const FormatException('请输入一次性配对码');
+      if ((vaultPassphrase ?? '').length < 12 ||
+          vaultPassphrase!.runes.any((r) => r < 33 || r > 126))
+        throw StateError('请先设置至少 12 个可见 ASCII 字符的端到端加密口令');
       if (server.isNotEmpty &&
           target != server &&
           ((await db.select(db.messages).get()).isNotEmpty ||
@@ -215,7 +232,7 @@ class RelayRepository extends ChangeNotifier {
       final identity = await platform.identity();
       final nonce = const Uuid().v4();
       final canonical =
-          '${identity['device_id']}\n${identity['public_key']}\n$nonce\n$pairingCode';
+          '${identity['device_id']}\n${identity['public_key']}\n$nonce\n$pairingCode\ne2ee-v1';
       final res = await http.post(
         '$target/api/v1/devices/register',
         data: {
@@ -223,14 +240,28 @@ class RelayRepository extends ChangeNotifier {
           'nonce': nonce,
           'pairing_code': pairingCode,
           'signature': await platform.sign(canonical),
+          'e2ee': true,
           'name': 'Android 手机',
         },
       );
       final newToken = (res.data as Map)['token'] as String;
       if (newToken.isEmpty) throw const FormatException('Empty token');
       await secure.write(key: 'token', value: newToken);
+      final params = await http.get<Map<String, dynamic>>(
+        '$target/api/v2/crypto/params',
+        options: Options(headers: {'Authorization': 'Bearer $newToken'}),
+      );
+      final salt = params.data?['salt'] as String?;
+      if (salt == null || salt.isEmpty)
+        throw const FormatException('服务器未提供加密参数');
+      await secure.write(key: 'vault_salt', value: salt);
+      vaultSalt = salt;
       await db.transaction(() async {
         if (target != server) await db.setPref('cursor', '0');
+        await db.setPref('encrypted_cursor', '0');
+        await db.setPref('e2ee_migration_done', 'false');
+        await (db.update(db.messages))
+            .write(const MessagesCompanion(state: Value('pending')));
         await db.setPref('server', target);
         await db.setPref('re_pair', 'false');
       });
@@ -314,6 +345,16 @@ class RelayRepository extends ChangeNotifier {
               .get();
       if (batch.isNotEmpty) await _uploadMessages(batch);
       await flushOperations(now);
+      if (await db.pendingCount() == 0 &&
+          (await db.select(db.operations).get()).isEmpty &&
+          await db.pref('e2ee_migration_done') != 'true') {
+        await http.post(
+          '$server/api/v2/legacy-migration',
+          options: auth,
+          data: {'complete': true},
+        );
+        await db.setPref('e2ee_migration_done', 'true');
+      }
       await pull();
       await applyRetention();
       state = '同步完成';
@@ -378,20 +419,27 @@ class RelayRepository extends ChangeNotifier {
     );
     try {
       final response = await http.post(
-        '$server/api/v1/messages/sync',
+        '$server/api/v2/encrypted-messages/sync',
+        data: {
+          'messages': [
+            for (final row in batch)
+              {
+                'message_id': row.id,
+                'received_at': row.received,
+                'ciphertext': await _encryptMessage(db.decode(row)),
+              },
+          ],
+        },
         options: auth,
-        data: {'messages': batch.map((e) => db.decode(e).toJson()).toList()},
       );
       final acked = <String>{};
       for (final item in (response.data as Map)['messages'] as List) {
         final data = Map<String, dynamic>.from(item);
-        final m = SmsMessage.fromJson(data);
+        final local = await db.find(data['message_id'] as String);
+        if (local == null) continue;
+        final m = local;
         if (ids.contains(m.id)) {
-          final canonicalId = data['canonical_message_id'] as String?;
-          if (canonicalId != null && canonicalId.isEmpty) {
-            throw const FormatException('Empty canonical message ID');
-          }
-          final saved = await db.saveUploadAck(m, canonicalId: canonicalId);
+          final saved = await db.saveUploadAck(m);
           acked.add(m.id);
           if (saved.action == 'allow') await notifyMessage(saved);
         }
@@ -400,6 +448,11 @@ class RelayRepository extends ChangeNotifier {
         await fail(row);
       }
       if (acked.isNotEmpty) {
+        await http.post(
+          '$server/api/v2/legacy-migration',
+          options: auth,
+          data: {'message_ids': acked.toList()},
+        );
         await db.setPref('last_ack', DateTime.now().toIso8601String());
       }
     } catch (e) {
@@ -444,26 +497,44 @@ class RelayRepository extends ChangeNotifier {
         ),
       );
   Future<void> pull() async {
-    var cursor = await db.pref('cursor') ?? '0';
+    var cursor = await db.pref('encrypted_cursor') ?? '0';
     for (var page = 0; page < 5; page++) {
       final r = await http.get(
-        '$server/api/v1/messages',
+        '$server/api/v2/encrypted-messages',
         options: auth,
         queryParameters: {'cursor': cursor, 'limit': 50},
       );
       final data = Map<String, dynamic>.from(r.data as Map);
       await db.transaction(() async {
         for (final item in data['messages'] as List) {
-          await db.saveRemote(
-            SmsMessage.fromJson(Map<String, dynamic>.from(item)),
+          final envelope = Map<String, dynamic>.from(item);
+          final plain = await platform.decryptVault(
+            envelope['ciphertext'] as String,
+            vaultPassphrase!,
+            vaultSalt!,
           );
+          final message = SmsMessage.fromJson(
+            Map<String, dynamic>.from(jsonDecode(plain) as Map),
+          );
+          await db.saveRemote(message);
         }
         cursor = data['cursor'].toString();
-        await db.setPref('cursor', cursor);
+        await db.setPref('encrypted_cursor', cursor);
       });
       _remoteMore = data['has_more'] == true;
       if (!_remoteMore) break;
     }
+  }
+
+  Future<String> _encryptMessage(SmsMessage message) async {
+    final passphrase = vaultPassphrase;
+    final salt = vaultSalt;
+    if (passphrase == null || salt == null) throw StateError('端到端加密尚未配置');
+    return platform.encryptVault(
+      jsonEncode(message.toJson()),
+      passphrase,
+      salt,
+    );
   }
 
   Future<void> restore(String id) async {
@@ -530,16 +601,17 @@ class RelayRepository extends ChangeNotifier {
 
   Future<void> feedback(String id, String category) async {
     if (!categories.containsKey(category)) throw ArgumentError('category');
-    await db
-        .into(db.operations)
-        .insert(
-          OperationsCompanion.insert(
-            id: const Uuid().v4(),
-            messageId: id,
-            kind: 'feedback',
-            payload: jsonEncode({'corrected_category': category}),
-          ),
-        );
+    final message = await db.find(id);
+    if (message == null) return;
+    final data = message.toJson()
+      ..['category'] = category
+      ..['reason'] = '用户纠错';
+    await (db.update(db.messages)..where((t) => t.id.equals(id))).write(
+      MessagesCompanion(
+        payload: Value(jsonEncode(data)),
+        state: const Value('pending'),
+      ),
+    );
     changed();
     unawaited(sync());
   }
@@ -557,23 +629,27 @@ class RelayRepository extends ChangeNotifier {
       final m = await db.find(op.messageId);
       if (m?.syncState != 'acked') continue;
       try {
-        final r = await http.post(
-          '$server/api/v1/messages/${op.messageId}/${op.kind}',
-          options: auth,
-          data: {
-            ...jsonDecode(op.payload) as Map<String, dynamic>,
-            'operation_id': op.id,
-          },
-        );
+        // Message operations are folded into the encrypted message envelope;
+        // no restore/archive metadata is sent as a plaintext API request.
+        if (op.kind != 'feedback') {
+          await http.post(
+            '$server/api/v2/encrypted-messages/sync',
+            options: auth,
+            data: {
+              'messages': [
+                {
+                  'message_id': m!.id,
+                  'received_at': m.receivedAt,
+                  'ciphertext': await _encryptMessage(m),
+                },
+              ],
+            },
+          );
+        }
         await db.transaction(() async {
           await (db.delete(
             db.operations,
           )..where((t) => t.id.equals(op.id))).go();
-          if (['restore', 'archive', 'unarchive'].contains(op.kind)) {
-            await db.saveRemote(
-              SmsMessage.fromJson(Map<String, dynamic>.from(r.data)),
-            );
-          }
         });
       } catch (_) {
         await (db.update(

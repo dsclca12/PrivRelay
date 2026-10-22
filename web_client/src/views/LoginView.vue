@@ -28,6 +28,7 @@
                 @keyup.enter="handlePair"
               />
               <el-input v-model="deviceName" placeholder="设备名称" size="large" maxlength="64" />
+              <el-input v-model="vaultPassphrase" type="password" show-password placeholder="端到端加密口令（至少 12 个可见 ASCII 字符；授权设备需使用相同口令）" size="large" />
               <el-button
                 type="primary"
                 size="large"
@@ -73,7 +74,7 @@
         <ul class="privacy-notes">
           <li>· 控制台只与你自己的自托管服务端通信，不经过任何第三方云端。</li>
           <li>· 配对使用浏览器 WebCrypto 生成的 ECDSA P-256 密钥签名，令牌仅保存在本浏览器。</li>
-          <li>· 分类、拦截与规则均在你的服务器上执行；被拦截的短信随时可查看与恢复。</li>
+          <li>· 短信正文端到端加密后才上传；云端不能读取、分类或搜索正文。</li>
         </ul>
       </el-card>
     </div>
@@ -94,6 +95,7 @@ const route = useRoute()
 const activeTab = ref('pair')
 const pairingCode = ref('')
 const deviceName = ref('Web 控制台')
+const vaultPassphrase = ref('')
 const tokenInput = ref('')
 const deviceIdInput = ref('')
 const pairing = ref(false)
@@ -111,7 +113,7 @@ async function handlePair(): Promise<void> {
   }
   pairing.value = true
   try {
-    await auth.pair(pairingCode.value, deviceName.value)
+    await auth.pair(pairingCode.value, deviceName.value, vaultPassphrase.value)
     ElMessage.success('配对成功，本浏览器已获得访问授权')
     await redirectNext()
   } catch (error) {

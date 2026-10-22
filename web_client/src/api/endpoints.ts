@@ -7,14 +7,36 @@ import type {
   RegisterRequest,
   RegisterResponse,
   Rules,
+  EncryptedMessage,
 } from './types'
+import { decryptVault, encryptVault } from '../utils/vault'
 
 export function getHealth(): Promise<Health> {
   return apiFetch<Health>('/healthz')
 }
 
 export function listMessages(cursor: number, limit = 50): Promise<MessagesPage> {
-  return apiFetch<MessagesPage>(`/api/v1/messages?cursor=${cursor}&limit=${limit}`)
+  return (async () => {
+    const page = await apiFetch<Omit<MessagesPage, 'messages'> & { messages: EncryptedMessage[] }>(`/api/v2/encrypted-messages?cursor=${cursor}&limit=${limit}`)
+    return { ...page, messages: await Promise.all(page.messages.map(async row => JSON.parse(await decryptVault(row.ciphertext)) as Message)) }
+  })()
+}
+
+async function allMessages(): Promise<Message[]> {
+  const all: Message[] = []
+  let cursor = 0
+  for (let page = 0; page < 1000; page++) {
+    const result = await listMessages(cursor, 50)
+    all.push(...result.messages)
+    cursor = result.cursor
+    if (!result.has_more) return all
+  }
+  throw new Error('消息数量超过浏览器检索上限')
+}
+
+async function saveEncrypted(message: Message): Promise<void> {
+  const ciphertext = await encryptVault(JSON.stringify(message))
+  await apiFetch('/api/v2/encrypted-messages/sync', { method: 'POST', body: { messages: [{ message_id: message.message_id, received_at: message.received_at, ciphertext }] } })
 }
 
 export interface MessageSearch {
@@ -33,18 +55,19 @@ export interface SearchPage {
   has_more: boolean
 }
 export function searchMessages(query: MessageSearch): Promise<SearchPage> {
-  const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(query)) {
-    if (value !== undefined && value !== '') params.set(key, String(value))
-  }
-  return apiFetch(`/api/v1/messages/search?${params}`)
+  return (async () => {
+    const filtered = (await allMessages()).filter(m => {
+      const q = query.q?.toLocaleLowerCase()
+      return (!q || `${m.sender}\n${m.body}`.toLocaleLowerCase().includes(q)) && (!query.category || m.category === query.category) && (!query.action || m.action === query.action) && (!query.device_id || m.device_id === query.device_id) && (query.archived === 'all' || m.archived === (query.archived === 'true'))
+    })
+    const offset = query.offset ?? 0, limit = query.limit ?? 50
+    return { messages: filtered.slice(offset, offset + limit), total: filtered.length, offset, has_more: offset + limit < filtered.length }
+  })()
 }
 
 export function restoreMessage(messageId: string, operationId: string): Promise<Message> {
-  return apiFetch<Message>(`/api/v1/messages/${encodeURIComponent(messageId)}/restore`, {
-    method: 'POST',
-    body: { operation_id: operationId },
-  })
+  void operationId
+  return updateEncrypted(messageId, m => ({ ...m, action: 'allow', restored: true, archived: false, reason: '用户恢复' }))
 }
 
 export function sendFeedback(
@@ -52,9 +75,10 @@ export function sendFeedback(
   operationId: string,
   correctedCategory: string,
 ): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>(`/api/v1/messages/${encodeURIComponent(messageId)}/feedback`, {
-    method: 'POST',
-    body: { operation_id: operationId, corrected_category: correctedCategory },
+  void operationId
+  return getMessage(messageId).then(async message => {
+    await saveEncrypted({ ...message, corrected_category: correctedCategory } as Message)
+    return { status: 'stored_encrypted' }
   })
 }
 
@@ -99,9 +123,17 @@ export function createPairingCode(): Promise<{ pairing_code: string; expires_at:
 export function getPairingStatus(): Promise<{ active: boolean; expires_at: number }> {
   return apiFetch('/api/v1/pairing-codes')
 }
+export function getVaultParams(): Promise<{ version: number; kdf: string; iterations: number; salt: string }> {
+  return apiFetch('/api/v2/crypto/params')
+}
+export function purgeLegacyPlaintext(): Promise<{ deleted: number }> {
+  return apiFetch('/api/v2/legacy-migration', { method: 'POST', body: { complete: true } })
+}
 
 export interface ServerStatus {
   messages: number
+  encrypted_messages?: number
+  e2ee_enabled?: boolean
   quarantined: number
   restored: number
   quarantine_reasons: Record<string, number>
@@ -141,7 +173,17 @@ export function reviewFeedback(id: string, status: 'approved' | 'rejected'): Pro
   })
 }
 export function getMessage(id: string): Promise<Message> {
-  return apiFetch(`/api/v1/messages/${encodeURIComponent(id)}`)
+  return allMessages().then(messages => {
+    const message = messages.find(item => item.message_id === id)
+    if (!message) throw new Error('message_not_found')
+    return message
+  })
+}
+
+async function updateEncrypted(id: string, update: (message: Message) => Message): Promise<Message> {
+  const message = update(await getMessage(id))
+  await saveEncrypted(message)
+  return message
 }
 
 export function getLLMSettings(): Promise<import('./types').LLMSettings> {
@@ -155,7 +197,8 @@ export function testLLM(): Promise<{ category: string; model_version: string; sy
 }
 
 export function archiveMessage(id: string, archived: boolean, operationId: string): Promise<Message> {
-  return apiFetch(`/api/v1/messages/${encodeURIComponent(id)}/${archived ? 'archive' : 'unarchive'}`, { method: 'POST', body: { operation_id: operationId } })
+  void operationId
+  return updateEncrypted(id, message => ({ ...message, archived }))
 }
 export interface FeedbackExport { schema_version: number; samples: Record<string, unknown>[]; total: number; offset: number; has_more: boolean }
 export function exportFeedback(purpose: 'evaluation' | 'training', includeText: boolean, offset: number): Promise<FeedbackExport> {

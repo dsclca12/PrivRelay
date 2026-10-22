@@ -13,6 +13,7 @@
 | [Android MVP](ANDROID_MVP.md) | 使用、实现闭环、构建、签名与平台限制 |
 | [原版分类器集成](CLASSIFIER_INTEGRATION.md) | 普通源码快照、真实评分接口、启动及阈值语义 |
 | [部署指南](DEPLOYMENT.md) | Go / Docker 启动、配置、分类器、HTTPS、备份与排障 |
+| [端到端加密](END_TO_END_ENCRYPTION.md) | Android / Web 共享口令、密文同步、旧数据迁移、TLS 与服务端存储加密 |
 | [后端 API](BACKEND_API.md) | 配对签名、认证、请求响应、同步语义与错误处理 |
 | [开发与贡献指南](../CONTRIBUTING.md) | 环境、验证命令、变更要求与文档规范 |
 | [依赖与权限](DEPENDENCIES.md) | 主要依赖、权限、许可复核范围 |

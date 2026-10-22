@@ -18,9 +18,10 @@ go run . -listen 127.0.0.1:8787 -data data/privrelay.enc
 | 参数 | 默认值 | 用途 |
 |---|---|---|
 | `-listen` | `127.0.0.1:8787` | HTTP 监听地址；公网访问通过 HTTPS 反向代理 |
-| `-data` | `data/privrelay.enc` | 密文快照路径；密钥为同路径追加 `.key` |
+| `-data` | `data/privrelay.enc` | AES-GCM 密文快照路径；默认密钥为同路径追加 `.key`，也可用 `PRIVRELAY_STORAGE_KEY` 从外部密钥管理器注入 32 字节 Base64 密钥 |
 | `-classifier` | `CLASSIFIER_URL` 环境变量，未设置时为空 | 分类器基础地址，不包含 `/api/v1/classify` |
 | `-web` | 空，关闭 | 可选的已有前端构建目录；无 SPA history 回退 |
+| `-tls-cert` / `-tls-key` | 空 | 同时设置时由 Go 直接提供 TLS 1.2+；也可由 Caddy 等可信反向代理终止 TLS |
 
 `CLASSIFIER_API_KEY` 通过 `X-API-Key` 传给上游分类请求。不要将密钥写入源码或提交到版本库。
 
@@ -45,7 +46,9 @@ docker compose up --build -d
 docker compose logs server
 ```
 
-`compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`；`classifier-feedback` 为上游反馈库提供独立持久化位置（可能含明文样本，需保护卷访问）。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY`；可使用本机环境变量或被忽略的根目录 `.env` 配置。
+`compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`；也可通过 `PRIVRELAY_STORAGE_KEY` 注入外部密钥管理器提供的 32 字节 Base64 密钥，使主密钥与数据卷分离。使用外部密钥时，备份/恢复仍须把密文与对应密钥一起保管。`classifier-feedback` 为上游反馈库提供独立持久化位置（可能含明文样本，需保护卷访问）。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY`；可使用本机环境变量或被忽略的根目录 `.env` 配置。
+
+若使用 `PRIVRELAY_STORAGE_KEY`，轮换密钥命令会生成带新 `.key` 文件的独立输出目录。恢复该轮换备份时，先移除旧的 `PRIVRELAY_STORAGE_KEY` 注入，或将新密钥更新到外部密钥管理器后再启动服务；旧密钥无法解密轮换后的快照。
 
 容器中的 `127.0.0.1` 指向容器本身；分类器地址应使用容器可达的服务名或宿主机地址。本 Compose 构建 Web 控制台并由 Go 同源托管，同时在内部网络启动 classifier 服务，不对宿主机暴露分类器端口；不启动 HTTPS 反向代理。默认 CLASSIFIER_URL 为 http://classifier:8000。两个服务均有容器健康检查，可用 `docker compose up --build -d --wait --wait-timeout 240` 等待就绪。server 探针检查 `/healthz` 的 HTTP 成功响应；分类器不可用时仍允许后端保存消息，分类器状态由响应中的 `classifier` 字段及独立的 classifier 探针表示。
 
@@ -53,7 +56,16 @@ docker compose logs server
 
 ## HTTPS 与浏览器接入
 
-向正式 Android 客户端提供 HTTPS 地址。后端保留在可信内网或回环监听，由反向代理终止 TLS。
+向正式 Android 客户端提供 HTTPS 地址。后端可用 `-tls-cert` 与 `-tls-key` 直接终止 TLS，也可保留在可信内网或回环监听，由反向代理终止 TLS。两种模式都会使用 TLS 1.2 或更新版本；HTTPS 响应设置 HSTS。代理必须覆盖不可信请求传入的 `X-Forwarded-Proto`，否则 HSTS 判断不可信。
+
+直接 TLS 示例：
+
+```bash
+./privrelay-server -listen 0.0.0.0:8787 -data data/privrelay.enc \
+  -tls-cert /run/secrets/relay.crt -tls-key /run/secrets/relay.key
+```
+
+证书私钥应通过受保护的 secret mount 提供，不要放入仓库或普通镜像层。容器内网的分类器连接仍需限制在可信网络；公开的 Android 连接必须使用 HTTPS。`compose.https.yaml` 使用 Caddy 自动签发和续期证书，也会提供 TLS。
 
 - 代理 `/api/v1/*` 和 `/healthz`；`/api/v1/ws` 需要支持 WebSocket 升级。
 - 保留公网 Host，HTTPS 代理设置 `X-Forwarded-Proto: https`；覆盖不可信客户端传入的转发头。
@@ -77,7 +89,7 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 ## 备份与恢复
 
 1. 停止写入，停止对应后端进程或执行 `docker compose stop server`，避免复制时快照与操作状态变化。
-2. 一起备份密文文件及其 `.key`，保护备份访问权限。Docker 部署备份命名卷内这两个文件。
+2. 一起备份密文文件及其密钥，保护备份访问权限。默认密钥位于 `.key`；外部密钥模式需从密钥管理器备份对应密钥。
 3. 恢复时将文件对放回配置的路径，保证服务用户可读写目录和文件；不要让两个进程同时打开同一存储。
 4. 启动后检查健康、配对设备身份及合成消息的上传和查询；既有会话仍受过期和撤销状态约束。
 

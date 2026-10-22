@@ -14,7 +14,7 @@ const directory = await mkdtemp(path.join(root, 'artifacts/web-state-'))
 const bundle = path.join(directory, 'tests.mjs')
 const syncBundle = path.join(directory, 'sync-tests.mjs')
 await build({
-  stdin: { contents: `export * from './src/composables/useMessageSearch'; export * from './src/stores/messages'; export { effectScope, nextTick } from 'vue'; export { createPinia, setActivePinia } from 'pinia'`, resolveDir: path.join(root, 'web_client') },
+  stdin: { contents: `export * from './src/composables/useMessageSearch'; export * from './src/stores/messages'; export { setVaultCredentials, encryptVault } from './src/utils/vault'; export { effectScope, nextTick } from 'vue'; export { createPinia, setActivePinia } from 'pinia'`, resolveDir: path.join(root, 'web_client') },
   bundle: true, platform: 'node', format: 'esm', outfile: bundle, define: { 'import.meta.env': '{}' },
 })
 await build({
@@ -36,15 +36,16 @@ globalThis.localStorage = { getItem: () => null }
 const api = await import(pathToFileURL(bundle).href)
 const realFetch = globalThis.fetch
 const requests = []
-globalThis.fetch = (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve: (data, status = 200) => resolve(new Response(JSON.stringify(data), { status })), reject }))
+globalThis.fetch = (url, options) => new Promise((resolve, reject) => requests.push({ url, options, resolve: (data, status = 200) => Promise.resolve(data).then(body => resolve(new Response(JSON.stringify(body), { status }))), reject }))
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 async function until(check) {
   for (let i = 0; i < 200; i++) { if (check()) return; await delay(10) }
   assert.fail('timed out waiting for state')
 }
-const row = id => ({ message_id: id, body: 'synthetic', received_at: 1, revision: 1 })
-const result = (ids, total = ids.length) => ({ messages: ids.map(row), total, offset: 0, has_more: false })
+const row = (id, body = 'synthetic') => ({ message_id: id, sender: 'test', body, received_at: 1, subscription_id: -1, slot: -1, category: 'uncertain', confidence: 0, risk: 0, needs_review: true, model_version: '', action: 'allow', reason: '', device_id: 'test-device', revision: 1, classified: false, restored: false, archived: false })
+const result = async (ids, total = ids.length, body = 'synthetic') => ({ messages: await Promise.all(Array.from({ length: total }, async (_, index) => { const message = row(ids[index] ?? `fixture-${index}`, body); return { ...message, ciphertext: await api.encryptVault(JSON.stringify(message)) } })), cursor: total, has_more: false })
 try {
+  api.setVaultCredentials('testphrase1234', { version: 1, kdf: 'PBKDF2-SHA256', iterations: 600000, salt: 'AAAAAAAAAAAAAAAAAAAAAA' })
   api.setActivePinia(api.createPinia())
   const scope = api.effectScope()
   const search = scope.run(() => api.useMessageSearch())
@@ -55,18 +56,18 @@ try {
   assert.equal(search.rows.value.length, 0, 'typing must invalidate an in-flight response immediately')
   await until(() => requests.length === 1)
   const filtered = requests.shift()
-  assert.equal(new URL(filtered.url, 'http://test').searchParams.get('q'), 'new filter')
-  filtered.resolve(result(['fresh'], 45))
+  assert.equal(new URL(filtered.url, 'http://test').pathname, '/api/v2/encrypted-messages')
+  filtered.resolve(result(['fresh'], 45, 'new filter'))
   await until(() => !search.loading.value)
   assert.equal(search.rows.value[0].message_id, 'fresh')
   search.page.value = 3
   await until(() => requests.length === 1)
   const last = requests.shift()
-  assert.equal(new URL(last.url, 'http://test').searchParams.get('offset'), '40')
-  last.resolve(result([], 40))
+  assert.equal(new URL(last.url, 'http://test').searchParams.get('cursor'), '0')
+  last.resolve(result([], 40, 'new filter'))
   await until(() => requests.length === 1)
   assert.equal(search.page.value, 2, 'removing the last row must clamp to the last nonempty page')
-  requests.shift().resolve(result(['last-valid'], 40))
+  requests.shift().resolve(result(['last-valid'], 40, 'new filter'))
   await until(() => !search.loading.value)
   search.pageSize.value = 50
   assert.equal(search.page.value, 1, 'page size changes reset pagination')

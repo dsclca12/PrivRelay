@@ -1,6 +1,6 @@
 # PrivRelay
 
-隐私优先、自托管的跨设备短信管理系统。Android 客户端接收新短信并加密保存在本机，通过 Go 服务同步，接入 [PrivateSMS-Classifier](https://github.com/dsclca12/PrivateSMS-Classifier) 进行分类，支持可选 OpenAI 兼容 LLM 自动分类、规则隔离、恢复和人工纠错。
+隐私优先、自托管的跨设备短信管理系统。Android 客户端接收新短信并加密保存在本机，通过端到端加密与 Go 服务同步；Web 和 Android 设备使用共享口令解密。服务端存储加密快照，并支持 HTTPS/TLS。E2EE 模式不向服务器分类器或 LLM 暴露短信正文，因此服务器端分类、全文搜索和纠错审核不可用；普通明文模式保留原有分类能力。详见[端到端加密说明](docs/END_TO_END_ENCRYPTION.md)。
 
 当前处于 **Android MVP 与后端联调阶段**，Web 控制台初版已交付，尚未完成生产稳定性和完整系统验收。
 
@@ -13,7 +13,7 @@
 | AI 分类 | 原版 PrivateSMS-Classifier／INT8 模型；可配置 OpenAI 兼容 LLM 直接分类或复核；独立授权的自动隔离 | LLM 地址、模型、密钥默认空且关闭；分数未经校准；重要消息保护，失败正常保留，隔离可恢复 |
 | Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、纠错审核、运行监控；管理台 API 与静态目录托管 | 归档与授权纠错样本导出；浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
 
-服务器、分类服务和主动配置的 LLM 接口能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
+首次配对 E2EE 设备会全局启用服务器 E2EE 模式并停用旧明文 API；Android 本地可访问的记录先加密迁移，其余旧服务器明文记录会删除，Web 首次配对会删除全部遗留明文记录。TLS 仍用于保护传输链路与令牌。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
 
 ## 快速开始
 

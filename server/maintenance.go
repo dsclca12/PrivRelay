@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -57,19 +58,28 @@ func maintainStore(action, source, destination string) error {
 	}()
 	target := filepath.Join(destination, "privrelay.enc")
 	if action == "rotate-key" {
-		rotated, e := openStore(target)
-		if e != nil {
-			return e
+		rotatedKey := make([]byte, 32)
+		if _, err = rand.Read(rotatedKey); err != nil {
+			return err
 		}
-		store.path, store.key = rotated.path, rotated.key
+		if err = writePrivate(target+".key", rotatedKey); err != nil {
+			return err
+		}
+		store.path, store.key = target, rotatedKey
 		if err = store.save(); err != nil {
 			return err
 		}
 	} else {
 		for _, suffix := range []string{".key", ""} {
-			raw, e := os.ReadFile(sourceFile + suffix)
-			if e != nil {
-				return e
+			var raw []byte
+			if suffix == ".key" && os.Getenv("PRIVRELAY_STORAGE_KEY") != "" {
+				raw = store.key
+			} else {
+				var e error
+				raw, e = os.ReadFile(sourceFile + suffix)
+				if e != nil {
+					return e
+				}
 			}
 			if err = writePrivate(target+suffix, raw); err != nil {
 				return err

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -141,7 +142,7 @@ func (s *Server) handler() http.Handler {
 		writeJSON(w, 200, map[string]string{"status": "ok", "classifier": status})
 	})
 	mux.HandleFunc("POST /api/v1/devices/register", s.register)
-	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) {
+	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		d, ok := s.auth(r)
@@ -150,6 +151,32 @@ func (s *Server) handler() http.Handler {
 			return
 		}
 		path := r.URL.Path
+		if (d.E2EE || s.store.E2EEEnabled) && (path == "/api/v1/messages/sync" || path == "/api/v1/messages" ||
+			path == "/api/v1/messages/search" || path == "/api/v1/filter/quarantine" ||
+			strings.HasPrefix(path, "/api/v1/messages/") || strings.HasPrefix(path, "/api/v1/feedback")) {
+			writeJSON(w, 403, map[string]string{"error": "e2ee_only"})
+			return
+		}
+		if path == "/api/v2/encrypted-messages/sync" && r.Method == "POST" {
+			s.syncEncryptedMessages(w, r, d)
+			return
+		}
+		if path == "/api/v2/crypto/params" && r.Method == "GET" {
+			writeJSON(w, 200, map[string]any{"version": 1, "kdf": "PBKDF2-SHA256", "iterations": 600000, "salt": s.store.VaultSalt})
+			return
+		}
+		if path == "/api/v2/encrypted-messages" && r.Method == "GET" {
+			if !d.E2EE {
+				writeJSON(w, 403, map[string]string{"error": "e2ee_required"})
+				return
+			}
+			s.listEncryptedMessages(w, r)
+			return
+		}
+		if path == "/api/v2/legacy-migration" && r.Method == "POST" {
+			s.migrateLegacyMessages(w, r, d)
+			return
+		}
 		if path == "/api/v1/ws" && r.Method == "GET" {
 			s.websocket(w, r, d)
 			return
@@ -236,9 +263,16 @@ func (s *Server) handler() http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+	mux.Handle("/api/v1/", apiHandler)
+	mux.Handle("/api/v2/", apiHandler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
+		// Reverse proxies must overwrite X-Forwarded-Proto with the transport
+		// they actually terminated; direct TLS is detected from r.TLS.
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		mux.ServeHTTP(w, r)
 	})
@@ -251,12 +285,17 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		Nonce     string `json:"nonce"`
 		Code      string `json:"pairing_code"`
 		Signature string `json:"signature"`
+		E2EE      bool   `json:"e2ee,omitempty"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.store.E2EEEnabled && !req.E2EE {
+		writeJSON(w, 403, map[string]string{"error": "e2ee_required"})
+		return
+	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if s.failures[host] >= 10 {
 		writeJSON(w, 429, map[string]string{"error": "restart_pairing_session"})
@@ -284,7 +323,11 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sig, err := base64.StdEncoding.DecodeString(req.Signature)
-	digest := sha256.Sum256([]byte(req.ID + "\n" + req.Key + "\n" + req.Nonce + "\n" + req.Code))
+	canonical := req.ID + "\n" + req.Key + "\n" + req.Nonce + "\n" + req.Code
+	if req.E2EE {
+		canonical += "\ne2ee-v1"
+	}
+	digest := sha256.Sum256([]byte(canonical))
 	if err != nil || !ecdsa.VerifyASN1(key, digest[:], sig) {
 		fail()
 		return
@@ -295,7 +338,10 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	token := randomToken()
 	before := s.snapshot()
-	s.store.Devices[req.ID] = Device{ID: req.ID, Name: req.Name, PublicKey: req.Key, TokenHash: hash(token), Active: true, Expires: time.Now().Add(90 * 24 * time.Hour).Unix()}
+	if req.E2EE {
+		s.store.E2EEEnabled = true
+	}
+	s.store.Devices[req.ID] = Device{ID: req.ID, Name: req.Name, PublicKey: req.Key, E2EE: req.E2EE, TokenHash: hash(token), Active: true, Expires: time.Now().Add(90 * 24 * time.Hour).Unix()}
 	if s.commit(w, before) {
 		s.code = ""
 		writeJSON(w, 201, map[string]string{"token": token, "device_id": req.ID})
@@ -305,6 +351,10 @@ func sameUploadedMessage(existing, incoming Message, device string) bool {
 	return existing.Device == device && existing.Sender == incoming.Sender && existing.Body == incoming.Body && existing.Received == incoming.Received && existing.Subscription == incoming.Subscription
 }
 func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) {
+	if s.store.E2EEEnabled || d.E2EE {
+		writeJSON(w, 403, map[string]string{"error": "e2ee_required"})
+		return
+	}
 	var req struct {
 		Messages []Message `json:"messages"`
 	}
@@ -342,6 +392,10 @@ func (s *Server) syncMessages(w http.ResponseWriter, r *http.Request, d Device) 
 	results := worker.classifyBatch(r.Context(), todo)
 	s.mu.Lock()
 	// Revocation or configuration changes while the model ran must take effect.
+	if s.store.E2EEEnabled {
+		writeJSON(w, 403, map[string]string{"error": "e2ee_only"})
+		return
+	}
 	if current, ok := s.auth(r); !ok || current.ID != d.ID {
 		writeJSON(w, 401, map[string]string{"error": "pairing_required"})
 		return
@@ -609,11 +663,16 @@ func (s *Server) broadcast() {
 func main() {
 	addr := flag.String("listen", "127.0.0.1:8787", "HTTP bind (use HTTPS reverse proxy)")
 	data := flag.String("data", "data/privrelay.enc", "encrypted single-owner MVP store")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate PEM; requires -tls-key")
+	tlsKey := flag.String("tls-key", "", "TLS private key PEM; requires -tls-cert")
 	classifier := flag.String("classifier", os.Getenv("CLASSIFIER_URL"), "PrivateSMS classifier base URL")
 	webDir := flag.String("web", "", "optional built frontend directory (disabled by default)")
 	maintenance := flag.String("maintenance", "", "offline backup, restore or rotate-key")
 	output := flag.String("output", "", "new private destination directory for maintenance")
 	flag.Parse()
+	if (*tlsCert == "") != (*tlsKey == "") {
+		log.Fatal("TLS requires both -tls-cert and -tls-key")
+	}
 	if *maintenance != "" {
 		if err := maintainStore(*maintenance, *data, *output); err != nil {
 			log.Fatal("maintenance failed: ", err)
@@ -654,6 +713,10 @@ func main() {
 	}()
 	fmt.Printf("PrivRelay listening on %s\nOne-time pairing code (10 minutes): %s\n", *addr, s.code)
 	server := &http.Server{Addr: *addr, Handler: s.handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
+	if *tlsCert != "" {
+		server.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		fmt.Println("TLS enabled (minimum TLS 1.2)")
+	}
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
@@ -667,7 +730,12 @@ func main() {
 		}
 		s.mu.Unlock()
 	}()
-	serveErr := server.ListenAndServe()
+	var serveErr error
+	if *tlsCert != "" {
+		serveErr = server.ListenAndServeTLS(*tlsCert, *tlsKey)
+	} else {
+		serveErr = server.ListenAndServe()
+	}
 	stop()
 	<-shutdownDone
 	<-backgroundDone

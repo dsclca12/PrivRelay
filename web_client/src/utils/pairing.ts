@@ -43,7 +43,7 @@ export async function buildPairingRequest(input: PairingInput): Promise<Register
   ])
   const publicKey = toBase64(await crypto.subtle.exportKey('spki', keyPair.publicKey))
 
-  const payload = new TextEncoder().encode(`${deviceId}\n${publicKey}\n${nonce}\n${code}`)
+  const payload = new TextEncoder().encode(`${deviceId}\n${publicKey}\n${nonce}\n${code}\ne2ee-v1`)
   // WebCrypto hashes the payload itself and returns IEEE P1363 r || s.
   // Go VerifyASN1 expects the two unsigned integers in an ASN.1 sequence.
   const raw = new Uint8Array(await crypto.subtle.sign(
@@ -66,5 +66,6 @@ export async function buildPairingRequest(input: PairingInput): Promise<Register
     nonce,
     pairing_code: code,
     signature,
+    e2ee: true,
   }
 }

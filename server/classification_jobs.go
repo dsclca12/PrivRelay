@@ -40,6 +40,10 @@ func (s *Server) classifyBatch(parent context.Context, messages []Message) map[s
 // Round-robin retry prevents a persistently uncertain message starving later records.
 func (s *Server) refreshClassifications() {
 	s.mu.Lock()
+	if s.store.E2EEEnabled {
+		s.mu.Unlock()
+		return
+	}
 	worker := s.classificationWorker()
 	pending := []Message{}
 	for _, m := range s.store.Messages {
@@ -62,7 +66,7 @@ func (s *Server) refreshClassifications() {
 	if worker.retryCursor != "" {
 		s.retryCursor = worker.retryCursor
 	}
-	if !s.sameClassificationSettings(worker) || len(results) == 0 {
+	if s.store.E2EEEnabled || !s.sameClassificationSettings(worker) || len(results) == 0 {
 		return
 	}
 	before := s.snapshot()

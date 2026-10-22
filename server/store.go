@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -40,6 +41,7 @@ type Device struct {
 	ID        string `json:"device_id"`
 	Name      string `json:"name"`
 	PublicKey string `json:"public_key"`
+	E2EE      bool   `json:"e2ee,omitempty"`
 	TokenHash string `json:"token_hash,omitempty"`
 	Active    bool   `json:"active"`
 	Expires   int64  `json:"expires_at"`
@@ -71,8 +73,22 @@ type MessageOperation struct {
 	MessageID string `json:"message_id"`
 	Kind      string `json:"kind"`
 }
+
+// EncryptedMessage is an opaque client-encrypted record. The server keeps
+// only routing metadata and the authenticated ciphertext envelope.
+type EncryptedMessage struct {
+	ID         string `json:"message_id"`
+	Device     string `json:"device_id"`
+	Received   int64  `json:"received_at"`
+	Revision   int64  `json:"revision"`
+	Ciphertext string `json:"ciphertext"`
+}
 type Store struct {
+	E2EEEnabled       bool                        `json:"e2ee_enabled,omitempty"`
+	LegacyPurged      bool                        `json:"legacy_plaintext_purged,omitempty"`
+	VaultSalt         string                      `json:"vault_salt,omitempty"`
 	MessageOperations map[string]MessageOperation `json:"message_operations,omitempty"`
+	EncryptedMessages map[string]EncryptedMessage `json:"encrypted_messages,omitempty"`
 	Exports           []ExportAudit               `json:"export_audit,omitempty"`
 	LLM               LLMSettings                 `json:"llm"`
 	Messages          map[string]Message          `json:"messages"`
@@ -86,27 +102,41 @@ type Store struct {
 
 func openStore(path string) (*Store, error) {
 	s := &Store{Messages: map[string]Message{}, Devices: map[string]Device{}, Feedback: map[string]Feedback{},
-		Rules: Rules{Mode: "classify", Threshold: 0.95, Whitelist: []string{}, Blacklist: []string{}}, path: path}
+		EncryptedMessages: map[string]EncryptedMessage{},
+		Rules:             Rules{Mode: "classify", Threshold: 0.95, Whitelist: []string{}, Blacklist: []string{}}, path: path}
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	key, err := os.ReadFile(path + ".key")
-	if errors.Is(err, os.ErrNotExist) {
-		if _, e := os.Stat(path); e == nil {
-			return nil, errors.New("data exists but key is missing")
+	var key []byte
+	if encoded := os.Getenv("PRIVRELAY_STORAGE_KEY"); encoded != "" {
+		var err error
+		key, err = base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			key, err = base64.RawStdEncoding.DecodeString(encoded)
 		}
-		key = make([]byte, 32)
-		if _, err = rand.Read(key); err != nil {
+		if err != nil || len(key) != 32 {
+			return nil, errors.New("PRIVRELAY_STORAGE_KEY must be base64 encoding of exactly 32 bytes")
+		}
+	} else {
+		var err error
+		key, err = os.ReadFile(path + ".key")
+		if errors.Is(err, os.ErrNotExist) {
+			if _, e := os.Stat(path); e == nil {
+				return nil, errors.New("data exists but key is missing")
+			}
+			key = make([]byte, 32)
+			if _, err = rand.Read(key); err != nil {
+				return nil, err
+			}
+			if err = writePrivate(path+".key", key); err != nil {
+				return nil, err
+			}
+			if err = syncDirectory(filepath.Dir(path)); err != nil {
+				return nil, err
+			}
+		} else if err != nil {
 			return nil, err
 		}
-		if err = writePrivate(path+".key", key); err != nil {
-			return nil, err
-		}
-		if err = syncDirectory(filepath.Dir(path)); err != nil {
-			return nil, err
-		}
-	} else if err != nil {
-		return nil, err
 	}
 	if len(key) != 32 {
 		return nil, errors.New("invalid storage key")
@@ -114,6 +144,14 @@ func openStore(path string) (*Store, error) {
 	s.key = key
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
+		salt := make([]byte, 16)
+		if _, err := rand.Read(salt); err != nil {
+			return nil, err
+		}
+		s.VaultSalt = base64.RawURLEncoding.EncodeToString(salt)
+		if err := s.save(); err != nil {
+			return nil, err
+		}
 		return s, nil
 	}
 	if err != nil {
@@ -130,6 +168,19 @@ func openStore(path string) (*Store, error) {
 	}
 	if err = json.Unmarshal(plain, s); err != nil {
 		return nil, err
+	}
+	if s.EncryptedMessages == nil {
+		s.EncryptedMessages = map[string]EncryptedMessage{}
+	}
+	if s.VaultSalt == "" {
+		salt := make([]byte, 16)
+		if _, err := rand.Read(salt); err != nil {
+			return nil, err
+		}
+		s.VaultSalt = base64.RawURLEncoding.EncodeToString(salt)
+		if err := s.save(); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }

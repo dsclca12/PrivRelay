@@ -7,6 +7,7 @@ services:
     environment:
       CLASSIFIER_URL: ${CLASSIFIER_URL:-http://classifier:8000}
       CLASSIFIER_API_KEY: ${CLASSIFIER_API_KEY:-}
+      PRIVRELAY_STORAGE_KEY: ${PRIVRELAY_STORAGE_KEY:-}
     volumes:
       - relay-data:/data
     security_opt:

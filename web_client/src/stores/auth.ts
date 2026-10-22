@@ -11,10 +11,11 @@ import {
   setDeviceName,
   setToken,
 } from '../api/client'
-import { createSession, deleteSession, getSession, registerDevice } from '../api/endpoints'
+import { createSession, deleteSession, getSession, getVaultParams, purgeLegacyPlaintext, registerDevice } from '../api/endpoints'
 import router from '../router'
 import { buildPairingRequest } from '../utils/pairing'
 import { useMessagesStore } from './messages'
+import { clearVaultCredentials, hasVaultCredentials, setVaultCredentials } from '../utils/vault'
 
 /** 服务端错误码 → 中文提示 */
 const ERROR_TEXT: Record<string, string> = {
@@ -37,30 +38,40 @@ export const useAuthStore = defineStore('auth', () => {
   const deviceId = ref(getDeviceId())
   const deviceName = ref(getDeviceName())
   let pendingPairToken: string | null = null
+  let pendingVaultPassphrase = ''
   const authenticated = ref(false)
   const paired = computed(() => authenticated.value)
 
   /** 使用服务端控制台输出的一次性配对码注册本浏览器 */
-  async function pair(pairingCode: string, name: string): Promise<void> {
+  async function pair(pairingCode: string, name: string, passphrase: string): Promise<void> {
     if (pendingPairToken) {
-      await useToken(pendingPairToken)
+      await useToken(pendingPairToken, '', pendingVaultPassphrase)
       pendingPairToken = null
+      pendingVaultPassphrase = ''
       return
     }
+    const phrase = passphrase.trim()
+    if (phrase.length < 12 || [...phrase].some((c) => c.charCodeAt(0) < 33 || c.charCodeAt(0) > 126)) throw new Error('端到端加密口令至少 12 个字符，且只能包含可见 ASCII 字符')
     const request = await buildPairingRequest({ pairingCode, deviceName: name })
     const response = await registerDevice(request)
     // Keep the returned token in memory until session creation succeeds, so a
     // transient failure can be retried without consuming another pairing code.
     pendingPairToken = response.token
+    pendingVaultPassphrase = passphrase
     setToken(response.token)
-    await useToken(response.token, response.device_id)
+    await useToken(response.token, response.device_id, passphrase)
+    await purgeLegacyPlaintext()
     pendingPairToken = null
+    pendingVaultPassphrase = ''
   }
 
-  async function useToken(rawToken: string, _id = ''): Promise<void> {
+  async function useToken(rawToken: string, _id = '', passphrase?: string): Promise<void> {
     setToken(rawToken.trim())
     await createSession()
     const session = await getSession()
+    const vaultPhrase = passphrase ?? window.prompt('输入端到端加密口令（至少 12 个字符）') ?? ''
+    const params = await getVaultParams()
+    setVaultCredentials(vaultPhrase, params)
     deviceId.value = session.device_id
     deviceName.value = session.name
     setDeviceId(session.device_id)
@@ -75,6 +86,11 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       if (getToken()) await useToken(getToken()!)
       const session = await getSession()
+      if (!hasVaultCredentials()) {
+        const phrase = window.prompt('输入端到端加密口令（至少 12 个字符）')
+        if (!phrase) return false
+        setVaultCredentials(phrase, await getVaultParams())
+      }
       deviceId.value = session.device_id
       deviceName.value = session.name
       authenticated.value = true
@@ -101,6 +117,7 @@ export const useAuthStore = defineStore('auth', () => {
     deviceId.value = ''
     deviceName.value = ''
     clearSession()
+    clearVaultCredentials()
     if (options.expired) {
       ElMessage.warning('访问令牌已失效，请重新配对本浏览器')
     }

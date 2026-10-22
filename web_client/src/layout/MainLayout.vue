@@ -77,6 +77,14 @@
       </el-header>
 
       <el-main class="app-main">
+        <el-alert
+          v-if="messages.summary?.e2ee_enabled"
+          title="端到端加密已启用：云端仅保存密文，远端分类、纠错审核和服务端正文搜索不可用。"
+          type="success"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 14px"
+        />
         <router-view />
       </el-main>
     </el-container>
@@ -96,7 +104,7 @@ const auth = useAuthStore()
 const messages = useMessagesStore()
 const { status: syncStatus, lastSyncAt, start, stop, refresh } = useSync()
 
-const menus = [
+const allMenus = [
   { path: '/messages', title: '消息中心', icon: 'ChatDotRound' },
   { path: '/quarantine', title: '拦截中心', icon: 'Filter' },
   { path: '/devices', title: '设备中心', icon: 'Cellphone' },
@@ -104,9 +112,12 @@ const menus = [
   { path: '/feedback', title: '纠错审核', icon: 'EditPen' },
   { path: '/monitor', title: '运行监控', icon: 'DataAnalysis' },
 ] as const
+const menus = computed(() => messages.summary?.e2ee_enabled
+  ? allMenus.filter(item => item.path !== '/feedback' && item.path !== '/rules')
+  : allMenus)
 
 const pageTitle = computed(
-  () => menus.find((item) => route.path.startsWith(item.path))?.title ?? '消息中心',
+  () => menus.value.find((item) => route.path.startsWith(item.path))?.title ?? '消息中心',
 )
 
 const statusMeta = computed<{ type: 'success' | 'warning' | 'info'; text: string }>(() => {

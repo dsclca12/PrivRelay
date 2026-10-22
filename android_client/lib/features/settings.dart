@@ -17,6 +17,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   late final address = TextEditingController(
     text: ref.read(repositoryProvider).server,
   );
+  late final vault = TextEditingController(
+    text: ref.read(repositoryProvider).vaultPassphrase ?? '',
+  );
   final code = TextEditingController();
   bool allowHttp = false, pairing = false;
 
@@ -30,10 +33,11 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
     final target = address.text.trim();
     final pairingCode = code.text.trim();
+    await r.setVaultPassphrase(vault.text);
     if (!await confirm(
       context,
       '确认同步目的地',
-      '服务器：$target\n配对后将上传本机已接收及后续短信的正文，供服务器分类和同步。',
+      '服务器：$target\n短信正文将使用端到端加密后同步；云端不能读取或分类正文。其他设备需要输入相同的加密口令。已有服务器明文记录会先从本机加密迁移，迁移完成后删除服务器上未迁移的旧明文记录。',
     )) {
       return;
     }
@@ -59,6 +63,7 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
   void dispose() {
     address.dispose();
     code.dispose();
+    vault.dispose();
     super.dispose();
   }
 
@@ -69,6 +74,18 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
       padding: const EdgeInsets.all(20),
       children: [
         Text('连接你的服务器', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 12),
+        TextField(
+          controller: vault,
+          obscureText: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(
+            labelText: '端到端加密口令（至少 12 个字符）',
+            helperText: '在每台授权设备上输入相同口令；口令不会发送到服务器。',
+            border: OutlineInputBorder(),
+          ),
+        ),
         const SizedBox(height: 12),
         OutlinedButton.icon(
           icon: const Icon(Icons.qr_code_scanner),
