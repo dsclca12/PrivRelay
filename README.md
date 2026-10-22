@@ -8,16 +8,16 @@
 
 | 模块 | 已实现 | 边界 |
 |---|---|---|
-| Android | Flutter / Kotlin、新短信接收、加密存储、离线队列、收件箱、隔离与恢复 | 非默认短信应用；不导入系统历史、不发送短信，不能抑制系统短信应用通知 |
+| Android | Flutter / Kotlin、新短信接收、加密存储、离线队列、收件箱、隔离与恢复、归档、设备密码应用锁 | 非默认短信应用；不导入系统历史、不发送短信，不能抑制系统短信应用通知 |
 | Go 服务 | 签名配对、消息同步与查询、规则、纠错、设备撤销、浏览器会话、WebSocket | 单用户、单进程、加密文件快照；尚无 PostgreSQL、多租户、多实例支持 |
 | AI 分类 | 原版 PrivateSMS-Classifier／INT8 模型；可配置 OpenAI 兼容 LLM 直接分类或复核；独立授权的自动隔离 | LLM 地址、模型、密钥默认空且关闭；分数未经校准；重要消息保护，失败正常保留，隔离可恢复 |
-| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、纠错审核、运行监控；管理台 API 与静态目录托管 | 浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
+| Web | Vue 3 + TypeScript 控制台：消息、拦截、设备、规则、纠错审核、运行监控；管理台 API 与静态目录托管 | 归档与授权纠错样本导出；浏览器会话鉴权与实时推送，断线时 5 秒轮询补偿；尚无多用户与权限体系 |
 
 服务器、分类服务和主动配置的 LLM 接口能够读取待分类正文，当前架构不提供端到端加密。Android 后台补发受系统省电和 OEM 限制，WorkManager 不保证秒级送达。上游源码是普通目录，没有嵌套 Git 仓库，提交及校验记录见 [集成说明](docs/CLASSIFIER_INTEGRATION.md)。更多限制见 [Android 使用说明](docs/ANDROID_MVP.md#使用边界)。
 
 ## 快速开始
 
-以下 PowerShell 命令从仓库根目录开始。后端需要 Go 1.25 或兼容工具链；Android 需要根目录 [.fvmrc](.fvmrc) 指定的 Flutter 3.47.7、JDK 17 和 Android SDK；Web 控制台需要 Node.js 20 或更高版本。
+以下 PowerShell 命令从仓库根目录开始。后端需要 Go 1.25 或兼容工具链；Android 需要根目录 [.fvmrc](.fvmrc) 指定的 Flutter 3.47.7、JDK 17 和 Android SDK；Web 控制台需要 Node.js 22 或更高版本。
 
 ### 一起启动 Web 与后端（Windows）
 

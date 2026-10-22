@@ -3,6 +3,7 @@
 export type MessageAction = 'allow' | 'quarantine'
 
 export interface Message {
+  archived?: boolean
   message_id: string
   sender: string
   body: string

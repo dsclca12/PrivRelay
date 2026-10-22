@@ -5,7 +5,7 @@ import type { ServerStatus } from '../api/endpoints'
 
 /** Only retain aggregate state. Message bodies belong to the visible search page. */
 export const useMessagesStore = defineStore('messages', () => {
-  let epoch = 0
+  const sessionVersion = ref(0)
   const summary = ref<ServerStatus | null>(null)
   const loading = ref(false)
   const lastSyncAt = ref<number | null>(null)
@@ -14,25 +14,25 @@ export const useMessagesStore = defineStore('messages', () => {
   async function pull(): Promise<void> {
     if (loading.value) return
     loading.value = true
-    const generation = epoch
+    const generation = sessionVersion.value
     try {
       const result = await getStatus()
-      if (generation !== epoch) return
+      if (generation !== sessionVersion.value) return
       summary.value = result
       lastSyncAt.value = Date.now()
       refreshVersion.value++
     } finally {
-      if (generation === epoch) loading.value = false
+      if (generation === sessionVersion.value) loading.value = false
     }
   }
 
   function $reset(): void {
-    epoch++
+    sessionVersion.value++
     summary.value = null
     loading.value = false
     lastSyncAt.value = null
     refreshVersion.value++
   }
 
-  return { summary, loading, lastSyncAt, refreshVersion, pull, $reset }
+  return { summary, loading, lastSyncAt, refreshVersion, sessionVersion, pull, $reset }
 })

@@ -193,7 +193,14 @@ func (s *Server) classifyConfigured(ctx context.Context, m Message) (Classificat
 }
 
 func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
-	c, ok := s.classifyLLM(r.Context(), Message{Sender: "TEST", Body: "合成测试：周末商店促销，全场优惠。", Received: time.Now().UnixMilli()})
+	worker := s.classificationWorker()
+	s.mu.Unlock()
+	c, ok := worker.classifyLLM(r.Context(), Message{Sender: "TEST", Body: "合成测试：周末商店促销，全场优惠。", Received: time.Now().UnixMilli()})
+	s.mu.Lock()
+	if _, authorized := s.auth(r); !authorized {
+		writeJSON(w, 401, map[string]string{"error": "pairing_required"})
+		return
+	}
 	if !ok {
 		writeJSON(w, 502, map[string]string{"error": "llm_test_failed"})
 		return

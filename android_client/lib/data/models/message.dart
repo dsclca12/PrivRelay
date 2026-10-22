@@ -19,7 +19,7 @@ class SmsMessage {
       syncState;
   final int receivedAt, subscriptionId, slot;
   final double confidence, risk;
-  final bool needsReview;
+  final bool needsReview, archived;
   const SmsMessage({
     required this.id,
     required this.sender,
@@ -35,6 +35,7 @@ class SmsMessage {
     this.confidence = 0,
     this.risk = 0,
     this.needsReview = true,
+    this.archived = false,
   });
 
   factory SmsMessage.fromJson(Map<String, dynamic> j) {
@@ -67,6 +68,7 @@ class SmsMessage {
       confidence: confidence,
       risk: risk,
       needsReview: j['needs_review'] as bool? ?? true,
+      archived: j['archived'] as bool? ?? false,
     );
   }
   Map<String, dynamic> toJson() => {
@@ -84,5 +86,6 @@ class SmsMessage {
     'confidence': confidence,
     'risk': risk,
     'needs_review': needsReview,
+    'archived': archived,
   };
 }

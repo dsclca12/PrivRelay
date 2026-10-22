@@ -164,6 +164,13 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           onChanged: (v) => perform(context, () => r.setPrivacy(protection: v)),
         ),
         const SizedBox(height: 12),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: r.appLockEnabled,
+          title: const Text('应用锁'),
+          subtitle: const Text('启动和返回应用时验证设备锁屏密码；后台收信与同步继续运行'),
+          onChanged: (value) => perform(context, () => r.setAppLock(value)),
+        ),
         const Text('本地自动保留期限'),
         DropdownButton<int>(
           isExpanded: true,

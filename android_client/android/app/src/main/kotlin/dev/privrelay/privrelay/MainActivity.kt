@@ -15,5 +15,6 @@ class MainActivity : FlutterActivity() {
     private var bridge:NativeBridge?=null
     override fun configureFlutterEngine(engine:FlutterEngine){super.configureFlutterEngine(engine);bridge=NativeBridge(this,engine.dartExecutor.binaryMessenger,this)}
     override fun onRequestPermissionsResult(request:Int,permissions:Array<out String>,grants:IntArray){super.onRequestPermissionsResult(request,permissions,grants);if(request==721)bridge?.permissionResult(grants)}
+    override fun onActivityResult(request:Int,result:Int,data:android.content.Intent?){super.onActivityResult(request,result,data);if(request==722)bridge?.authenticationResult(result)}
     override fun onDestroy(){bridge?.close();bridge=null;super.onDestroy()}
 }

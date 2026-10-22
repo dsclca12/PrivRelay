@@ -66,6 +66,7 @@ class RelayRepository extends ChangeNotifier {
   String server = '', deviceId = '', state = '本地模式', error = '';
   String? token;
   bool hidePreviews = false, screenProtection = true;
+  bool appLockEnabled = false, appUnlocked = false, authenticating = false;
   String notificationMode = 'all';
   int retentionDays = 0;
   bool onboarded = false,
@@ -120,6 +121,7 @@ class RelayRepository extends ChangeNotifier {
     onboarded = await db.pref('onboarded') == 'true';
     rePair = await db.pref('re_pair') == 'true';
     backgroundEnabled = await db.pref('background') != 'false';
+    appLockEnabled = await db.pref('app_lock') == 'true';
     hidePreviews = await db.pref('hide_previews') == 'true';
     screenProtection = await db.pref('screen_protection') != 'false';
     notificationMode = await db.pref('notification_mode') ?? 'all';
@@ -132,6 +134,35 @@ class RelayRepository extends ChangeNotifier {
         : '等待同步';
     pending = await db.pendingCount();
     operationCount = (await db.select(db.operations).get()).length;
+  }
+
+  void lockApp() {
+    if (appLockEnabled && !authenticating) {
+      appUnlocked = false;
+      changed();
+    }
+  }
+
+  Future<bool> unlockApp() async {
+    if (authenticating) return false;
+    authenticating = true;
+    changed();
+    try {
+      final success = await platform.authenticate();
+      if (success) appUnlocked = true;
+      return success;
+    } finally {
+      authenticating = false;
+      changed();
+    }
+  }
+
+  Future<void> setAppLock(bool enabled) async {
+    if (!await unlockApp()) throw StateError('未完成身份验证，请先为设备设置锁屏密码后重试');
+    if (enabled) await setPrivacy(protection: true);
+    await db.setPref('app_lock', '$enabled');
+    appLockEnabled = enabled;
+    changed();
   }
 
   void changed() {
@@ -164,7 +195,11 @@ class RelayRepository extends ChangeNotifier {
     if (busy) throw StateError('请等待当前同步完成');
     busy = true;
     changed();
+    var locked = false;
     try {
+      locked = await platform.lock();
+      if (!locked) throw StateError('后台同步正在进行，请稍后重试');
+      server = await db.pref('server') ?? server;
       final target = validateServer(
         address,
         allowHttp: kDebugMode && allowHttp,
@@ -208,6 +243,7 @@ class RelayRepository extends ChangeNotifier {
     } on DioException catch (e) {
       throw StateError('配对失败（${e.response?.statusCode ?? '连接不可用'}）');
     } finally {
+      if (locked) await platform.unlock();
       busy = false;
       changed();
     }
@@ -235,7 +271,14 @@ class RelayRepository extends ChangeNotifier {
         _retry = Timer(const Duration(seconds: 2), sync);
         return;
       }
-      // Refresh preferences for headless workers and other engine instances.
+      // Other engines may have paired, unpaired or changed settings since load.
+      final persistedServer = await db.pref('server');
+      if (persistedServer != null) {
+        server = persistedServer;
+        token = await secure.read(key: 'token');
+        rePair = await db.pref('re_pair') == 'true';
+      }
+      backgroundEnabled = await db.pref('background') != 'false';
       notificationMode = await db.pref('notification_mode') ?? 'all';
       retentionDays = int.tryParse(await db.pref('retention_days') ?? '') ?? 0;
       await applyRetention();
@@ -269,57 +312,7 @@ class RelayRepository extends ChangeNotifier {
                 ..orderBy([(t) => OrderingTerm.asc(t.received)])
                 ..limit(50))
               .get();
-      if (batch.isNotEmpty) {
-        final ids = batch.map((e) => e.id).toList();
-        await (db.update(db.messages)..where((t) => t.id.isIn(ids))).write(
-          const MessagesCompanion(state: Value('uploading')),
-        );
-        try {
-          final response = await http.post(
-            '$server/api/v1/messages/sync',
-            options: auth,
-            data: {
-              'messages': batch.map((e) => db.decode(e).toJson()).toList(),
-            },
-          );
-          final acked = <String>{};
-          for (final item in (response.data as Map)['messages'] as List) {
-            final m = SmsMessage.fromJson(Map<String, dynamic>.from(item));
-            if (ids.contains(m.id)) {
-              await db.saveRemote(m);
-              acked.add(m.id);
-              if (m.action == 'allow') await notifyMessage(m);
-            }
-          }
-          for (final row in batch.where((e) => !acked.contains(e.id))) {
-            await fail(row);
-          }
-          if (acked.isNotEmpty) {
-            await db.setPref('last_ack', DateTime.now().toIso8601String());
-          }
-        } catch (e) {
-          final status = e is DioException ? e.response?.statusCode : null;
-          final permanent =
-              status != null &&
-              status >= 400 &&
-              status < 500 &&
-              ![401, 403, 408, 429].contains(status);
-          for (final row in batch) {
-            if (permanent) {
-              await (db.update(db.messages)..where((t) => t.id.equals(row.id)))
-                  .write(const MessagesCompanion(state: Value('rejected')));
-              await db.setPref(
-                'last_rejection',
-                '上传被服务器拒绝（$status），消息仍在本机，请检查服务接口及消息长度',
-              );
-            } else {
-              await fail(row);
-            }
-            await notifyMessage(db.decode(row));
-          }
-          rethrow;
-        }
-      }
+      if (batch.isNotEmpty) await _uploadMessages(batch);
       await flushOperations(now);
       await pull();
       await applyRetention();
@@ -358,11 +351,7 @@ class RelayRepository extends ChangeNotifier {
                   ..orderBy([(t) => OrderingTerm.asc(t.retryAt)])
                   ..limit(1))
                 .get();
-        final ops =
-            await (db.select(db.operations)
-                  ..orderBy([(t) => OrderingTerm.asc(t.retryAt)])
-                  ..limit(1))
-                .get();
+        final ops = await db.operationHeads();
         final times = [
           if (rows.isNotEmpty) rows.first.retryAt,
           if (ops.isNotEmpty) ops.first.retryAt,
@@ -379,6 +368,67 @@ class RelayRepository extends ChangeNotifier {
         _retry = Timer(Duration(seconds: seconds), sync);
         if (backgroundEnabled) await platform.schedule(seconds);
       }
+    }
+  }
+
+  Future<void> _uploadMessages(List<Message> batch) async {
+    final ids = batch.map((e) => e.id).toList();
+    await (db.update(db.messages)..where((t) => t.id.isIn(ids))).write(
+      const MessagesCompanion(state: Value('uploading')),
+    );
+    try {
+      final response = await http.post(
+        '$server/api/v1/messages/sync',
+        options: auth,
+        data: {'messages': batch.map((e) => db.decode(e).toJson()).toList()},
+      );
+      final acked = <String>{};
+      for (final item in (response.data as Map)['messages'] as List) {
+        final data = Map<String, dynamic>.from(item);
+        final m = SmsMessage.fromJson(data);
+        if (ids.contains(m.id)) {
+          final canonicalId = data['canonical_message_id'] as String?;
+          if (canonicalId != null && canonicalId.isEmpty) {
+            throw const FormatException('Empty canonical message ID');
+          }
+          final saved = await db.saveUploadAck(m, canonicalId: canonicalId);
+          acked.add(m.id);
+          if (saved.action == 'allow') await notifyMessage(saved);
+        }
+      }
+      for (final row in batch.where((e) => !acked.contains(e.id))) {
+        await fail(row);
+      }
+      if (acked.isNotEmpty) {
+        await db.setPref('last_ack', DateTime.now().toIso8601String());
+      }
+    } catch (e) {
+      final status = e is DioException ? e.response?.statusCode : null;
+      if (batch.length > 1 && [400, 409, 413, 422].contains(status)) {
+        final middle = batch.length ~/ 2;
+        await _uploadMessages(batch.sublist(0, middle));
+        await _uploadMessages(batch.sublist(middle));
+        return;
+      }
+      final permanent =
+          status != null &&
+          status >= 400 &&
+          status < 500 &&
+          ![401, 403, 408, 429].contains(status);
+      for (final row in batch) {
+        if (permanent) {
+          await (db.update(db.messages)..where((t) => t.id.equals(row.id)))
+              .write(const MessagesCompanion(state: Value('rejected')));
+          await db.setPref(
+            'last_rejection',
+            '上传被服务器拒绝（$status），消息仍在本机，请检查服务接口及消息长度',
+          );
+        } else {
+          await fail(row);
+        }
+        await notifyMessage(db.decode(row));
+      }
+      if (!permanent) rethrow;
     }
   }
 
@@ -420,6 +470,11 @@ class RelayRepository extends ChangeNotifier {
     final m = await db.find(id);
     if (m == null) return;
     await db.transaction(() async {
+      await (db.delete(db.operations)..where(
+            (t) =>
+                t.messageId.equals(id) & t.kind.isIn(['archive', 'unarchive']),
+          ))
+          .go();
       await db
           .into(db.operations)
           .insert(
@@ -432,12 +487,41 @@ class RelayRepository extends ChangeNotifier {
           );
       final data = m.toJson()
         ..['action'] = 'allow'
-        ..['reason'] = '用户恢复';
+        ..['reason'] = '用户恢复'
+        ..['archived'] = false;
       await (db.update(db.messages)..where((t) => t.id.equals(id))).write(
         MessagesCompanion(
           action: const Value('allow'),
           payload: Value(jsonEncode(data)),
         ),
+      );
+    });
+    changed();
+    unawaited(sync());
+  }
+
+  Future<void> archive(String id, bool archived) async {
+    final m = await db.find(id);
+    if (m == null) return;
+    await db.transaction(() async {
+      await (db.delete(db.operations)..where(
+            (t) =>
+                t.messageId.equals(id) & t.kind.isIn(['archive', 'unarchive']),
+          ))
+          .go();
+      await db
+          .into(db.operations)
+          .insert(
+            OperationsCompanion.insert(
+              id: const Uuid().v4(),
+              messageId: id,
+              kind: archived ? 'archive' : 'unarchive',
+              payload: '{}',
+            ),
+          );
+      final data = m.toJson()..['archived'] = archived;
+      await (db.update(db.messages)..where((t) => t.id.equals(id))).write(
+        MessagesCompanion(payload: Value(jsonEncode(data))),
       );
     });
     changed();
@@ -461,12 +545,15 @@ class RelayRepository extends ChangeNotifier {
   }
 
   Future<void> flushOperations(int now) async {
-    final ops =
-        await (db.select(db.operations)
-              ..where((t) => t.retryAt.isSmallerOrEqualValue(now))
-              ..limit(50))
-            .get();
+    // A delayed restore must not be overtaken by a later archive on the same
+    // message, otherwise retrying restore would undo the user's latest action.
+    final ops = await db.operationHeads(dueBefore: now);
     for (final op in ops) {
+      // An action can be replaced while another message's request is in flight.
+      final current = await (db.select(
+        db.operations,
+      )..where((t) => t.id.equals(op.id))).getSingleOrNull();
+      if (current == null) continue;
       final m = await db.find(op.messageId);
       if (m?.syncState != 'acked') continue;
       try {
@@ -482,7 +569,7 @@ class RelayRepository extends ChangeNotifier {
           await (db.delete(
             db.operations,
           )..where((t) => t.id.equals(op.id))).go();
-          if (op.kind == 'restore') {
+          if (['restore', 'archive', 'unarchive'].contains(op.kind)) {
             await db.saveRemote(
               SmsMessage.fromJson(Map<String, dynamic>.from(r.data)),
             );
@@ -597,17 +684,27 @@ class RelayRepository extends ChangeNotifier {
 
   Future<void> unpair() async {
     if (busy) throw StateError('请等待同步完成');
-    final socket = _socket;
-    _socket = null;
-    await socket?.sink.close();
-    _retry?.cancel();
-    _wsRetry?.cancel();
-    await secure.delete(key: 'token');
-    token = null;
-    rePair = false;
-    await db.setPref('re_pair', 'false');
-    state = '本地模式';
+    busy = true;
     changed();
+    var locked = false;
+    try {
+      locked = await platform.lock();
+      if (!locked) throw StateError('后台同步正在进行，请稍后重试');
+      final socket = _socket;
+      _socket = null;
+      await socket?.sink.close();
+      _retry?.cancel();
+      _wsRetry?.cancel();
+      await secure.delete(key: 'token');
+      token = null;
+      rePair = false;
+      await db.setPref('re_pair', 'false');
+      state = '本地模式';
+    } finally {
+      if (locked) await platform.unlock();
+      busy = false;
+      changed();
+    }
   }
 
   Future<void> setBackground(bool enabled) async {
@@ -624,6 +721,9 @@ class RelayRepository extends ChangeNotifier {
   }
 
   Future<void> setPrivacy({bool? previews, bool? protection}) async {
+    if (protection == false && appLockEnabled) {
+      throw StateError('请先关闭应用锁，再关闭防截屏保护');
+    }
     if (protection != null) {
       await platform.protectScreen(protection);
       await db.setPref('screen_protection', '$protection');

@@ -97,6 +97,7 @@ class AppDatabase extends _$AppDatabase {
   });
   Future<List<SmsMessage>> page({
     bool quarantine = false,
+    bool archived = false,
     String search = '',
     String? category,
     int offset = 0,
@@ -107,6 +108,13 @@ class AppDatabase extends _$AppDatabase {
             ? t.action.equals('quarantine')
             : t.action.equals('allow'),
       );
+    if (!quarantine) {
+      q.where(
+        (t) => CustomExpression<bool>(
+          "COALESCE(json_extract(payload, '\$.archived'), 0) = ${archived ? 1 : 0}",
+        ),
+      );
+    }
     if (category != null) {
       q.where((t) => t.category.equals(category));
     }
@@ -150,14 +158,42 @@ class AppDatabase extends _$AppDatabase {
     return row == null ? null : decode(row);
   }
 
+  // The server ACKs the transport ID but may reuse a canonical stored message
+  // for a deduplicated SMS. Migrate local actions before applying that ACK.
+  Future<SmsMessage> saveUploadAck(SmsMessage message, {String? canonicalId}) =>
+      transaction(() async {
+        final target = canonicalId == null || canonicalId == message.id
+            ? message
+            : SmsMessage.fromJson(
+                message.toJson()..['message_id'] = canonicalId,
+              );
+        if (target.id != message.id) {
+          await (update(operations)
+                ..where((t) => t.messageId.equals(message.id)))
+              .write(OperationsCompanion(messageId: Value(target.id)));
+          await (delete(messages)..where((t) => t.id.equals(message.id))).go();
+        }
+        await saveRemote(target);
+        return (await find(target.id))!;
+      });
+
   Future<void> saveRemote(SmsMessage m) async {
-    final ops = await (select(
-      operations,
-    )..where((t) => t.messageId.equals(m.id) & t.kind.equals('restore'))).get();
+    final ops =
+        await (select(operations)
+              ..where((t) => t.messageId.equals(m.id))
+              ..orderBy([
+                (t) => OrderingTerm.asc(const CustomExpression<int>('rowid')),
+              ]))
+            .get();
     final data = m.toJson();
-    if (ops.isNotEmpty) {
-      data['action'] = 'allow';
-      data['reason'] = '用户恢复';
+    for (final op in ops) {
+      if (op.kind == 'restore') {
+        data['action'] = 'allow';
+        data['reason'] = '用户恢复';
+        data['archived'] = false;
+      } else if (op.kind == 'archive' || op.kind == 'unarchive') {
+        data['archived'] = op.kind == 'archive';
+      }
     }
     await into(messages).insertOnConflictUpdate(
       MessagesCompanion.insert(
@@ -169,6 +205,21 @@ class AppDatabase extends _$AppDatabase {
         state: const Value('acked'),
       ),
     );
+  }
+
+  // SQLite rowid preserves insertion order without a schema migration. Only
+  // the oldest outstanding action for each message may be sent or scheduled.
+  Future<List<Operation>> operationHeads({int? dueBefore}) async {
+    final rows = await customSelect(
+      'SELECT op.* FROM operations AS op '
+      'WHERE (? IS NULL OR op.retry_at <= ?) AND NOT EXISTS ('
+      'SELECT 1 FROM operations AS older '
+      'WHERE older.message_id = op.message_id AND older.rowid < op.rowid) '
+      'ORDER BY op.retry_at, op.rowid LIMIT 50',
+      variables: [Variable<int>(dueBefore), Variable<int>(dueBefore)],
+      readsFrom: {operations},
+    ).get();
+    return rows.map((row) => operations.map(row.data)).toList();
   }
 
   Future<int> countState(List<String> states) async {

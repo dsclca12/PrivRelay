@@ -90,6 +90,7 @@ void main() {
     },
   );
   test('bounded pull schedules remaining remote pages even without pending uploads', () async {
+    FlutterSecureStorage.setMockInitialValues({'token': 'synthetic-token'});
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final cursors = <int>[];
     final listener = server.listen((request) async {
@@ -116,6 +117,7 @@ void main() {
       await request.response.close();
     });
     final db = AppDatabase(NativeDatabase.memory());
+    await db.setPref('server', 'http://127.0.0.1:${server.port}');
     final platform = EmptySpool();
     final r = RelayRepository(db, platform: platform)
       ..server = 'http://127.0.0.1:${server.port}'

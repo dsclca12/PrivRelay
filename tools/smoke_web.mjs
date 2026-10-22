@@ -87,6 +87,17 @@ try {
   assert.equal(page.messages[0].device_id, phone.device_id)
   assert.equal(page.messages[0].classified, false)
   const id = page.messages[0].message_id
+  const aliasId = crypto.randomUUID()
+  const aliasUpload = await realFetch(`${base}/api/v1/messages/sync`, {
+    method: 'POST', headers: { Authorization: `Bearer ${phone.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages: [{ ...page.messages[0], message_id: aliasId }] }),
+  })
+  assert.equal(aliasUpload.status, 200)
+  const aliasAck = (await aliasUpload.json()).messages[0]
+  assert.equal(aliasAck.message_id, aliasId)
+  assert.equal(aliasAck.canonical_message_id, id)
+  assert.equal((await api.listMessages(0)).messages.length, 1)
+  console.log('PASS duplicate transport identity resolves to one canonical message')
   const restored = await api.restoreMessage(id, crypto.randomUUID())
   assert.equal(restored.restored, true)
   api.setActivePinia(api.createPinia())
@@ -105,6 +116,21 @@ try {
   assert.equal((await api.getStatus()).pending_feedback, 0)
   assert.equal((await api.getMessage(id)).restored, true)
   await assert.rejects(api.reviewFeedback(feedbackId, 'rejected'), error => error.status === 409)
+  const metadataExport = await api.exportFeedback('evaluation', false, 0)
+  assert.equal(metadataExport.samples.length, 1)
+  assert.equal(metadataExport.samples[0].text, undefined)
+  const textExport = await api.exportFeedback('training', true, 0)
+  assert.equal(textExport.samples[0].text, (await api.getMessage(id)).body)
+  const archiveOperation = crypto.randomUUID()
+  assert.equal((await api.archiveMessage(id, true, archiveOperation)).archived, true)
+  assert.equal((await api.searchMessages({ archived: 'true' })).total, 1)
+  assert.equal((await api.searchMessages({ archived: 'false' })).total, 0)
+  const unarchived = await api.archiveMessage(id, false, crypto.randomUUID())
+  assert.equal(unarchived.archived, false)
+  const replayedArchive = await api.archiveMessage(id, true, archiveOperation)
+  assert.equal(replayedArchive.archived, false, 'an older archive retry must preserve the later unarchive')
+  assert.equal(replayedArchive.revision, unarchived.revision)
+  console.log('PASS archive synchronization and explicit authorized feedback exports')
   console.log('PASS review, provenance, pending counts and retry protection')
   for (let start = 0; start < 104; start += 50) {
     const batch = Array.from({ length: Math.min(50, 104 - start) }, (_, n) => ({

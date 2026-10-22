@@ -6,7 +6,7 @@ import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 assert.equal(process.env.PRIVRELAY_COMPOSE_TEST, '1', 'Use only with an isolated test deployment')
 assert.match(process.env.COMPOSE_PROJECT_NAME ?? '', /^privrelay-test-[a-z0-9-]+$/)
 const compose = (...args) => execFileSync('docker', ['compose', ...args], { encoding: 'utf8', windowsHide: true, timeout: 180000 })
-const base = 'http://127.0.0.1:8787'
+const base = `http://127.0.0.1:${process.env.PRIVRELAY_PORT || '8787'}`
 async function request(route, { token, body, status = 200 } = {}) {
   const response = await fetch(base + route, {
     method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(15000),
@@ -37,6 +37,15 @@ compose('stop', 'server')
 const inspectStore = () => compose('run', '--rm', '--no-deps', '--entrypoint', 'sh', 'server', '-ec',
   'test -s /data/privrelay.enc; test "$(wc -c < /data/privrelay.enc.key)" -eq 32; test "$(stat -c %a /data/privrelay.enc)" = 600; test "$(stat -c %a /data/privrelay.enc.key)" = 600; sha256sum /data/privrelay.enc /data/privrelay.enc.key')
 const storedHashes = inspectStore()
+for (const [action, source, output] of [
+  ['backup', '/data/privrelay.enc', '/data/synthetic-backup'],
+  ['restore', '/data/synthetic-backup', '/data/synthetic-restored'],
+  ['rotate-key', '/data/synthetic-restored/privrelay.enc', '/data/synthetic-rotated'],
+]) {
+  compose('run', '--rm', '--no-deps', 'server', '-maintenance', action, '-data', source, '-output', output)
+}
+compose('run', '--rm', '--no-deps', '--entrypoint', 'sh', 'server', '-ec',
+  'cmp /data/privrelay.enc /data/synthetic-restored/privrelay.enc; cmp /data/privrelay.enc.key /data/synthetic-restored/privrelay.enc.key; ! cmp -s /data/privrelay.enc.key /data/synthetic-rotated/privrelay.enc.key')
 const ciphertext = compose('run', '--rm', '--no-deps', '--entrypoint', 'cat', 'server', '/data/privrelay.enc')
 assert.ok(!ciphertext.includes(message.body), 'Message body must not be stored in plaintext')
 // A new container must read the named volume, not retain data in its writable layer.
@@ -48,4 +57,4 @@ assert.ok(inspectStore() === storedHashes, 'Restart must preserve the ciphertext
 const replay = await request('/api/v1/messages/sync', { token, body: { messages: [message] } })
 assert.equal(replay.messages[0].message_id, message.message_id)
 assert.equal((await request('/api/v1/status', { token })).messages, 1)
-console.log('PASS container classifier, signed pairing, encrypted persistence, restart, authorization and replay')
+console.log('PASS container backup, restore, key rotation, classifier, signed pairing, encrypted persistence, restart, authorization and replay')

@@ -11,6 +11,7 @@ import (
 )
 
 type Message struct {
+	Archived              bool            `json:"archived"`
 	PrimaryClassification *Classification `json:"primary_classification,omitempty"`
 	Source                string          `json:"classification_source,omitempty"`
 	LLMPending            bool            `json:"llm_pending,omitempty"`
@@ -59,15 +60,28 @@ type Feedback struct {
 	ReviewedBy string `json:"reviewed_by,omitempty"`
 	ReviewedAt int64  `json:"reviewed_at,omitempty"`
 }
+type ExportAudit struct {
+	Device      string `json:"device_id"`
+	At          int64  `json:"at"`
+	Purpose     string `json:"purpose"`
+	IncludeText bool   `json:"include_text"`
+	Count       int    `json:"count"`
+}
+type MessageOperation struct {
+	MessageID string `json:"message_id"`
+	Kind      string `json:"kind"`
+}
 type Store struct {
-	LLM      LLMSettings         `json:"llm"`
-	Messages map[string]Message  `json:"messages"`
-	Devices  map[string]Device   `json:"devices"`
-	Feedback map[string]Feedback `json:"feedback"`
-	Rules    Rules               `json:"rules"`
-	Revision int64               `json:"revision"`
-	path     string
-	key      []byte
+	MessageOperations map[string]MessageOperation `json:"message_operations,omitempty"`
+	Exports           []ExportAudit               `json:"export_audit,omitempty"`
+	LLM               LLMSettings                 `json:"llm"`
+	Messages          map[string]Message          `json:"messages"`
+	Devices           map[string]Device           `json:"devices"`
+	Feedback          map[string]Feedback         `json:"feedback"`
+	Rules             Rules                       `json:"rules"`
+	Revision          int64                       `json:"revision"`
+	path              string
+	key               []byte
 }
 
 func openStore(path string) (*Store, error) {
@@ -85,7 +99,10 @@ func openStore(path string) (*Store, error) {
 		if _, err = rand.Read(key); err != nil {
 			return nil, err
 		}
-		if err = os.WriteFile(path+".key", key, 0600); err != nil {
+		if err = writePrivate(path+".key", key); err != nil {
+			return nil, err
+		}
+		if err = syncDirectory(filepath.Dir(path)); err != nil {
 			return nil, err
 		}
 	} else if err != nil {
@@ -142,5 +159,11 @@ func (s *Store) save() error {
 	if closeErr != nil {
 		return closeErr
 	}
-	return os.Rename(s.path+".tmp", s.path)
+	if err = os.Rename(s.path+".tmp", s.path); err != nil {
+		return err
+	}
+	// Rename is the commit point. A directory-sync failure must not roll memory
+	// back behind the already-visible file. Best effort on supported filesystems.
+	_ = syncDirectory(filepath.Dir(s.path))
+	return nil
 }

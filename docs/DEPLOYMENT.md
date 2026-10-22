@@ -93,3 +93,41 @@ Invoke-RestMethod http://127.0.0.1:8787/healthz
 | 上传返回 503 | 数据目录或卷权限、磁盘空间；保留原始消息等待重试，不清空本地库 |
 | 浏览器写入被拒绝 | Host / Origin 同源、代理转发头、会话过期与设备撤销状态 |
 | 静态页面 404 | 是否显式设置 `-web`、构建目录是否存在；统一入口使用 web_client/dist 与 hash 路由，无 history 回退 |
+
+## 离线备份、恢复与换钥工具
+
+2026-10-22 新增维护命令，Windows 使用对应 `.exe`。先停止服务；运行中的服务持有 OS 文件锁，维护工具会拒绝访问同一个库。锁文件在退出后保留，但 OS 锁会自动释放，不需要手工删除。
+
+```bash
+# 备份源数据库和密钥，输出目录必须不存在
+./privrelay-server -maintenance backup -data data/privrelay.enc -output backups/first
+# 验证清单与密文可解密性后，恢复到新的目录
+./privrelay-server -maintenance restore -data backups/first -output data-restored
+# 生成新密钥并重新加密全部记录，原库保持不变
+./privrelay-server -maintenance rotate-key -data data/privrelay.enc -output data-rekeyed
+# 验证成功后可显式使用新库启动
+./privrelay-server -data data-rekeyed/privrelay.enc
+```
+
+每个输出包含 `privrelay.enc`、`privrelay.enc.key` 和 SHA-256 清单。目录权限为 0700、文件 0600（Windows 仍需由运营者管理 ACL）。输出包含解密密钥，必须当作完整敏感备份保护。换钥不会撤销设备令牌；旧备份仍可由旧密钥解密，应按自己的备份保留策略处理。维护工具不覆盖源目录或既有备份，也不修改客户端数据库密钥。
+
+Docker 先执行 `docker compose stop server`，再执行：
+
+```bash
+docker compose run --rm --no-deps server -maintenance backup -data /data/privrelay.enc -output /data/backup-first
+docker compose start server
+```
+
+此示例把备份写在同一命名卷内；用于操作演练，灾备时还需把完整目录复制到另一受保护介质。
+
+## 可选 Caddy HTTPS 入口
+
+仓库提供 `compose.https.yaml` 和 `deploy/Caddyfile`。域名 DNS 指向本机、80/443 可达后运行：
+
+```bash
+PRIVRELAY_DOMAIN=relay.example.com docker compose -f compose.yaml -f compose.https.yaml up --build -d
+```
+
+Caddy 自动申请和续期域名证书，并转发 WebSocket。证书保存在独立命名卷中；保留原服务的回环端口便于本机诊断。配置依据 [Caddy 官方反向代理说明](https://caddyserver.com/docs/quick-starts/reverse-proxy) 和 [自动 HTTPS 条件](https://caddyserver.com/docs/automatic-https)。本轮自动测试覆盖本地 TLS 代理、Secure Cookie、跨源请求拒绝和 WSS 推送；公网 DNS、ACME 签发及续期需要在实际域名部署后验收。
+
+`PRIVRELAY_PORT` 可更改后端回环端口，默认 8787。自动容器测试使用随机端口和独立合成资料卷。

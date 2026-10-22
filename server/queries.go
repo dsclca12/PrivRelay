@@ -23,9 +23,18 @@ func (s *Server) searchMessages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "query_contract"})
 		return
 	}
+	archived := q.Get("archived")
+	if archived != "" && archived != "true" && archived != "false" && archived != "all" {
+		writeJSON(w, 400, map[string]string{"error": "query_contract"})
+		return
+	}
 	needle := strings.ToLower(q.Get("q"))
 	rows := []Message{}
 	for _, m := range s.store.Messages {
+		// Quarantine always remains visible, including archived quarantine records.
+		if r.URL.Path != "/api/v1/filter/quarantine" && archived != "all" && m.Archived != (archived == "true") {
+			continue
+		}
 		if category != "" && m.Category != category || action != "" && m.Action != action || device != "" && m.Device != device {
 			continue
 		}

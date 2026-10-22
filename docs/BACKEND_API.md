@@ -77,7 +77,9 @@ Android 设置中的「扫码绑定服务器」读取二维码，检查版本、
 {"messages":[{"message_id":"019a0000-0000-7000-8000-000000000001","sender":"TEST","body":"合成测试短信","received_at":1792540800000,"subscription_id":1,"slot":0}]}
 ```
 
-服务以认证身份覆盖 device_id，不接受客户端伪造分类或策略。上传成功返回 `{messages:[Message...]}`，只在刷盘成功后 ACK；HTTP 200 后客户端按返回的 message_id 确认。相同设备、发送方、正文、接收时间和 subscription_id 的重试去重。相同 ID 却不同内容返回 409；失败时保持本机消息，不直接删除。单请求上限 512 KiB，正文最多 4096 个 Unicode 字符。单批分类总预算 8 秒、单次上游超时 3 秒，预算耗尽后原文正常保存并由后台补分类。
+服务以认证身份覆盖 device_id，不接受客户端伪造分类或策略。上传成功返回 `{messages:[Message...]}`，只在刷盘成功后 ACK；HTTP 200 后客户端按返回的 message_id 确认。相同设备、发送方、正文、接收时间和 subscription_id 的重试去重。相同 ID 却不同内容返回 409；失败时保持本机消息，不直接删除。同步请求上限 3 MiB（涵盖 50 条、每条最多 4096 个 Unicode 字符的 JSON 转义开销，包括补充平面字符的 UTF-16 代理对转义）；其他 JSON 请求仍为 512 KiB，超限返回 413。单批分类总预算 8 秒、单次上游超时 3 秒，预算耗尽后原文正常保存并由后台补分类。
+
+如果重传使用了不同 message_id，ACK 的 message_id 仍回显此次上传 ID，并额外提供 `canonical_message_id` 指向服务端已有记录。客户端应在确认上传时，以事务将本地记录和待处理操作合并到 canonical_message_id；后续查询、恢复、归档与纠错使用该 ID。常规 ACK 与查询结果省略此字段，不会为同一短信创建第二条服务端记录。
 
 ### Message
 
@@ -102,7 +104,7 @@ action：`allow / quarantine`。confidence、risk 均为 0–1。不要将待分
 {"operation_id":"客户端生成的UUID"}
 ```
 
-反馈再增加 `corrected_category`。反馈相同 operation_id 重试去重，内容冲突返回 409。恢复不会删除短信，后续补分类也保留用户恢复结果。当前规则只对后续上传及尚未完成分类的消息生效，不自动回溯重判全部历史。
+反馈再增加 `corrected_category`。每个操作使用独立的 operation_id；将同一个 ID 用于不同短信、不同动作或不同纠错内容返回 409。归档、取消归档和恢复的操作收据与状态一起持久化，即使操作未改变当前状态也会记录。重试已确认的操作返回消息当前状态，不重放旧动作，因此服务重启后也不会撤销较新的操作；升级前未记录收据的历史操作不在此保证内。反馈重试返回已有审核状态。恢复不会删除短信，后续补分类也保留用户恢复结果。当前规则只对后续上传及尚未完成分类的消息生效，不自动回溯重判全部历史。
 
 ### 纠错审核
 
@@ -134,7 +136,8 @@ status 字段：`messages, quarantined, restored, quarantine_reasons, pending_cl
 | 400 / 422 | 参数或消息契约有误，保留原始数据，修正后重试 |
 | 401 | 未授权、已撤销或令牌过期，停止自动上传并提示重新配对 |
 | 403 | 签名 / 配对码 / Origin 校验失败 |
-| 409 | message_id 或反馈 operation_id 冲突，不覆盖已存记录 |
+| 409 | message_id 或 operation_id 冲突，不覆盖已存记录 |
+| 413 | JSON 请求体超过接口大小上限 |
 | 429 | 当前配对会话单来源失败达 10 次，由已授权设备生成新码，或重启服务 |
 | 503 | 刷盘失败，无 ACK，指数退避重试 |
 
@@ -155,3 +158,12 @@ flutter test integration_test/mvp_test.dart --flavor dev -d <序列号> --dart-d
 已授权客户端通过 `GET /api/v1/ai/settings` 查询配置，通过 `PUT /api/v1/ai/settings` 保存，通过 `POST /api/v1/ai/test` 发送固定合成样本。字段、空白默认值、密钥保留与清除、HTTP 显式授权、分类输出及失败补偿见 [AI 分类说明](AI_CLASSIFICATION.md#接口与密钥)。
 
 消息新增可选字段 `classification_source`（`privatesms`／`llm`）、`llm_pending`、`primary_classification`（LLM 复核前的轻量模型分类结果）。旧客户端可忽略。`GET /api/v1/status` 增加 `llm_mode`、`pending_llm_review`。LLM 使用独立阈值，不改变原版分类器决策语义。
+
+## 2026-10-22：归档与授权导出
+
+- 消息新增 `archived` 布尔值，旧快照默认为 `false`，归档变化沿用现有 revision 同步流。
+- `POST /api/v1/messages/{id}/archive`、`.../unarchive` 接收与恢复相同的 `operation_id`；重复设置同一状态不会产生新修订。恢复到收件箱也会取消归档。
+- `GET /api/v1/messages/search` 新增 `archived=false|true|all`，默认未归档。专属隔离查询始终包含归档消息；Web 隔离页显式请求 `all`，避免隐藏可恢复记录。
+- `POST /api/v1/feedback/export` 必须带 `consent:true`、`purpose:evaluation|training`、`include_text`、`offset` 和 `limit`（1–100）。仅导出已通过审核的记录，默认不含正文；`include_text:true` 才附带 `text`、`sender`。返回 `schema_version:1`、`samples`、`total`、`offset`、`has_more`。每次分页导出在加密快照中记录设备、时间、用途、是否包含正文和数量，保留最近 1000 次记录；不会调用外部服务或启动训练。
+
+模型调用使用请求开始时的配置快照，在全局锁外执行。设备撤销后不提交在途上传；配置变化后舍弃旧分类结果并正常保存待分类消息。后台补分类按消息轮转，提交前检查修订号，避免覆盖并发恢复或归档。WebSocket 每连接独立写入并合并变更提示，慢客户端不会占用数据锁。

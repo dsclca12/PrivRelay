@@ -83,6 +83,7 @@
       <template v-if="allowActions">
       <div class="detail-section-title">操作</div>
       <div class="drawer-actions">
+        <el-button v-if="allowArchive" @click="emit('archive')">{{ message.archived ? '取消归档' : '归档消息' }}</el-button>
         <el-button
           v-if="message.action === 'quarantine'"
           type="primary"
@@ -126,6 +127,7 @@ import type { Message } from '../api/types'
 import { CATEGORY_OPTIONS, actionMeta, categoryMeta, formatDateTime, formatPercent, shortId } from '../utils/format'
 
 interface Props {
+  allowArchive?: boolean
   modelValue: boolean
   message: Message | null
   allowActions?: boolean
@@ -135,6 +137,7 @@ const props = withDefaults(defineProps<Props>(), { allowActions: true })
 
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
+  archive: []
   restore: []
   feedback: [category: string]
 }>()

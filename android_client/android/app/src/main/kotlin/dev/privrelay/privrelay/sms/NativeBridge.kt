@@ -28,12 +28,23 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
     private val channel = MethodChannel(messenger,"dev.privrelay/sms")
     private var ownsLock=false
     private var pendingPermission:MethodChannel.Result?=null
+    private var pendingAuthentication:MethodChannel.Result?=null
     init {
         if(activity!=null) foreground=this
         channel.setMethodCallHandler { call,result ->
             try {
                 when(call.method) {
                     "status" -> result.success(mapOf("sms" to granted(Manifest.permission.RECEIVE_SMS),"notifications" to (Build.VERSION.SDK_INT<33 || granted(Manifest.permission.POST_NOTIFICATIONS)),"spool_count" to Spool(context).use{it.count()}))
+                    "authenticate" -> {
+                        val owner=activity
+                        val keyguard=context.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+                        if(owner==null || pendingAuthentication!=null || !keyguard.isDeviceSecure) result.success(false)
+                        else {
+                            val intent=keyguard.createConfirmDeviceCredentialIntent("解锁 PrivRelay","请验证设备锁屏密码以查看短信")
+                            if(intent==null) result.success(false)
+                            else {pendingAuthentication=result;owner.startActivityForResult(intent,722)}
+                        }
+                    }
                     "requestSms" -> request(Manifest.permission.RECEIVE_SMS,result)
                     "requestNotifications" -> if(Build.VERSION.SDK_INT>=33) request(Manifest.permission.POST_NOTIFICATIONS,result) else result.success(true)
                     "peek" -> result.success(Spool(context).use{it.peek()})
@@ -63,6 +74,7 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
             } catch(_:Exception) { result.error("PLATFORM_ERROR","平台操作未完成，数据已保留",null) }
         }
     }
+    fun authenticationResult(result:Int) {pendingAuthentication?.success(result==Activity.RESULT_OK);pendingAuthentication=null}
     fun permissionResult(grants:IntArray) {pendingPermission?.success(grants.isNotEmpty() && grants.all{it==PackageManager.PERMISSION_GRANTED});pendingPermission=null}
     private fun granted(permission:String)=context.checkSelfPermission(permission)==PackageManager.PERMISSION_GRANTED
     private fun request(permission:String,result:MethodChannel.Result) {
@@ -71,7 +83,7 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
         pendingPermission=result;activity.requestPermissions(arrayOf(permission),721)
     }
     private fun releaseLock(){if(ownsLock){ownsLock=false;consumer.set(false)}}
-    fun close(){releaseLock();if(foreground===this)foreground=null;channel.setMethodCallHandler(null);pendingPermission?.success(false);pendingPermission=null}
+    fun close(){pendingAuthentication?.success(false);pendingAuthentication=null;releaseLock();if(foreground===this)foreground=null;channel.setMethodCallHandler(null);pendingPermission?.success(false);pendingPermission=null}
     private fun keyStore()=KeyStore.getInstance("AndroidKeyStore").apply{load(null)}
     @Synchronized private fun identity():Map<String,String> {
         var store=keyStore()

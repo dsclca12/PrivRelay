@@ -18,6 +18,7 @@ export function listMessages(cursor: number, limit = 50): Promise<MessagesPage> 
 }
 
 export interface MessageSearch {
+  archived?: string
   q?: string
   category?: string
   action?: string
@@ -151,4 +152,12 @@ export function putLLMSettings(settings: import('./types').LLMSettings & { api_k
 }
 export function testLLM(): Promise<{ category: string; model_version: string; synthetic: boolean }> {
   return apiFetch('/api/v1/ai/test', { method: 'POST', body: {} })
+}
+
+export function archiveMessage(id: string, archived: boolean, operationId: string): Promise<Message> {
+  return apiFetch(`/api/v1/messages/${encodeURIComponent(id)}/${archived ? 'archive' : 'unarchive'}`, { method: 'POST', body: { operation_id: operationId } })
+}
+export interface FeedbackExport { schema_version: number; samples: Record<string, unknown>[]; total: number; offset: number; has_more: boolean }
+export function exportFeedback(purpose: 'evaluation' | 'training', includeText: boolean, offset: number): Promise<FeedbackExport> {
+  return apiFetch('/api/v1/feedback/export', { method: 'POST', body: { consent: true, purpose, include_text: includeText, offset, limit: 100 } })
 }

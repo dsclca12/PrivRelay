@@ -15,16 +15,17 @@ const lastSyncAt = ref<number | null>(null)
 
 let generation = 0
 let started = false
-let refreshing = false
+let activeRefresh: object | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let wsRetryTimer: ReturnType<typeof setTimeout> | null = null
 let socket: WebSocket | null = null
 
 async function refresh(): Promise<void> {
-  if (refreshing) {
+  if (!started || activeRefresh) {
     return
   }
-  refreshing = true
+  const refreshToken = {}
+  activeRefresh = refreshToken
   const request = generation
   const auth = useAuthStore()
   const messages = useMessagesStore()
@@ -46,7 +47,7 @@ async function refresh(): Promise<void> {
       logs.push('warn', `同步失败：${detail}`)
     }
   } finally {
-    refreshing = false
+    if (activeRefresh === refreshToken) activeRefresh = null
   }
 }
 
@@ -117,6 +118,7 @@ export function useSync() {
       return
     }
     started = true
+    status.value = 'polling'
     document.addEventListener('visibilitychange', onVisibilityChange)
     connectWs()
     pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
@@ -127,6 +129,7 @@ export function useSync() {
   function stop(): void {
     generation++
     started = false
+    activeRefresh = null
     lastSyncAt.value = null
     status.value = 'off'
     if (pollTimer) {

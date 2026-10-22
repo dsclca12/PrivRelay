@@ -14,6 +14,8 @@ class SmsPlatform {
           .map((e) => Map<String, dynamic>.from(e as Map))
           .toList();
   Future<void> ack(List<String> ids) => channel.invokeMethod('ack', ids);
+  Future<bool> authenticate() async =>
+      await channel.invokeMethod<bool>('authenticate') ?? false;
   Future<void> initialize() => channel.invokeMethod('initialize');
   Future<void> schedule([int seconds = 30]) =>
       channel.invokeMethod('schedule', seconds);

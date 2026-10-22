@@ -10,3 +10,6 @@ server/data/
 web/node_modules/
 web/dist/
 **/*.egg-info/
+
+__pycache__/
+*.pyc

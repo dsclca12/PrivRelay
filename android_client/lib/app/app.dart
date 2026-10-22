@@ -80,6 +80,10 @@ class _RelayAppState extends ConsumerState<RelayApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      r.lockApp();
+    }
     if (state == AppLifecycleState.resumed) {
       r.load().then((_) {
         r.changed();
@@ -97,27 +101,61 @@ class _RelayAppState extends ConsumerState<RelayApp>
   }
 
   @override
-  Widget build(BuildContext context) => MaterialApp.router(
-    title: 'PrivRelay',
-    debugShowCheckedModeBanner: false,
-    locale: const Locale('zh', 'CN'),
-    supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
-    localizationsDelegates: GlobalMaterialLocalizations.delegates,
-    theme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff24655b)),
-      scaffoldBackgroundColor: const Color(0xfff5f7f6),
-      cardTheme: const CardThemeData(elevation: 0),
-    ),
-    darkTheme: ThemeData(
-      useMaterial3: true,
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xff71cbb6),
-        brightness: Brightness.dark,
+  Widget build(BuildContext context) {
+    watchRepository(ref);
+    return MaterialApp.router(
+      title: 'PrivRelay',
+      debugShowCheckedModeBanner: false,
+      locale: const Locale('zh', 'CN'),
+      supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
+      localizationsDelegates: GlobalMaterialLocalizations.delegates,
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff24655b)),
+        scaffoldBackgroundColor: const Color(0xfff5f7f6),
+        cardTheme: const CardThemeData(elevation: 0),
       ),
-    ),
-    routerConfig: router,
-  );
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xff71cbb6),
+          brightness: Brightness.dark,
+        ),
+      ),
+      builder: (context, child) {
+        if (!r.appLockEnabled || r.appUnlocked) {
+          return child ?? const SizedBox.shrink();
+        }
+        return Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_outline, size: 48),
+                  const SizedBox(height: 16),
+                  const Text('PrivRelay 已锁定'),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: r.authenticating
+                        ? null
+                        : () => perform(context, () async {
+                            if (!await r.unlockApp()) {
+                              throw StateError('未完成验证，请重试');
+                            }
+                          }),
+                    child: Text(r.authenticating ? '正在验证…' : '使用设备密码解锁'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+      routerConfig: router,
+    );
+  }
 }
 
 Future<void> perform(BuildContext context, Future<void> Function() task) async {
