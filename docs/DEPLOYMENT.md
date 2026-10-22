@@ -47,7 +47,7 @@ docker compose logs server
 
 `compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`；`classifier-feedback` 为上游反馈库提供独立持久化位置（可能含明文样本，需保护卷访问）。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY`；可使用本机环境变量或被忽略的根目录 `.env` 配置。
 
-容器中的 `127.0.0.1` 指向容器本身；分类器地址应使用容器可达的服务名或宿主机地址。本 Compose 构建 Web 控制台并由 Go 同源托管，同时在内部网络启动 classifier 服务，不对宿主机暴露分类器端口；不启动 HTTPS 反向代理。默认 CLASSIFIER_URL 为 http://classifier:8000。本轮环境没有 Docker，容器镜像和运行尚未实测，部署后需检查容器日志、卷权限和健康接口。
+容器中的 `127.0.0.1` 指向容器本身；分类器地址应使用容器可达的服务名或宿主机地址。本 Compose 构建 Web 控制台并由 Go 同源托管，同时在内部网络启动 classifier 服务，不对宿主机暴露分类器端口；不启动 HTTPS 反向代理。默认 CLASSIFIER_URL 为 http://classifier:8000。两个服务均有容器健康检查，可用 `docker compose up --build -d --wait --wait-timeout 240` 等待就绪。server 探针检查 `/healthz` 的 HTTP 成功响应；分类器不可用时仍允许后端保存消息，分类器状态由响应中的 `classifier` 字段及独立的 classifier 探针表示。
 
 更新镜像可再次执行 `docker compose up --build -d`。不要使用 `docker compose down -v` 停机，该命令会删除保存运行数据的卷。
 
