@@ -10,7 +10,9 @@ const base = 'http://127.0.0.1:8787'
 async function request(route, { token, body, status = 200 } = {}) {
   const response = await fetch(base + route, {
     method: body === undefined ? 'GET' : 'POST', signal: AbortSignal.timeout(15000),
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' },
+    // Docker lifecycle commands block Node's event loop. Do not leave pooled sockets
+    // pointing at the old server when it is stopped/recreated between requests.
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json', Connection: 'close' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   assert.equal(response.status, status, route)
@@ -32,9 +34,17 @@ const upload = await request('/api/v1/messages/sync', { token, body: { messages:
 assert.equal(upload.messages[0].message_id, message.message_id)
 assert.equal(upload.messages[0].classified, true)
 compose('stop', 'server')
-compose('run', '--rm', '--no-deps', '--entrypoint', 'sh', 'server', '-c', 'test -s /data/privrelay.enc && test -s /data/privrelay.enc.key')
-compose('up', '-d', '--wait', '--wait-timeout', '120')
+const inspectStore = () => compose('run', '--rm', '--no-deps', '--entrypoint', 'sh', 'server', '-ec',
+  'test -s /data/privrelay.enc; test "$(wc -c < /data/privrelay.enc.key)" -eq 32; test "$(stat -c %a /data/privrelay.enc)" = 600; test "$(stat -c %a /data/privrelay.enc.key)" = 600; sha256sum /data/privrelay.enc /data/privrelay.enc.key')
+const storedHashes = inspectStore()
+const ciphertext = compose('run', '--rm', '--no-deps', '--entrypoint', 'cat', 'server', '/data/privrelay.enc')
+assert.ok(!ciphertext.includes(message.body), 'Message body must not be stored in plaintext')
+// A new container must read the named volume, not retain data in its writable layer.
+compose('up', '-d', '--force-recreate', '--no-deps', '--wait', '--wait-timeout', '120', 'server')
+assert.equal((await request('/healthz')).classifier, 'ok')
+await request('/api/v1/messages', { status: 401 })
 assert.equal((await request('/api/v1/messages/' + message.message_id, { token })).body, message.body)
+assert.ok(inspectStore() === storedHashes, 'Restart must preserve the ciphertext and original key')
 const replay = await request('/api/v1/messages/sync', { token, body: { messages: [message] } })
 assert.equal(replay.messages[0].message_id, message.message_id)
 assert.equal((await request('/api/v1/status', { token })).messages, 1)

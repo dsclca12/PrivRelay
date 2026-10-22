@@ -11,5 +11,7 @@ USER relay
 WORKDIR /app
 COPY --from=build /privrelay /app/privrelay
 EXPOSE 8787
+HEALTHCHECK --interval=5s --timeout=5s --start-period=10s --retries=12 \
+  CMD wget -q -T 3 -O /dev/null http://127.0.0.1:8787/healthz || exit 1
 ENTRYPOINT ["/app/privrelay"]
 CMD ["-listen", "0.0.0.0:8787", "-data", "/data/privrelay.enc"]
