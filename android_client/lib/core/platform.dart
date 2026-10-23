@@ -5,8 +5,26 @@ class SmsPlatform {
   const SmsPlatform({this.channel = const MethodChannel('dev.privrelay/sms')});
   Future<Map<String, dynamic>> status() async =>
       Map<String, dynamic>.from(await channel.invokeMapMethod('status') ?? {});
+  Future<bool> requestSmsRole() async =>
+      await channel.invokeMethod<bool>('requestSmsRole') ?? false;
   Future<bool> requestSms() async =>
       await channel.invokeMethod<bool>('requestSms') ?? false;
+  Future<bool> requestReadSms() async =>
+      await channel.invokeMethod<bool>('requestReadSms') ?? false;
+  Future<List<Map<String, dynamic>>> importHistory([int limit = 5000]) async =>
+      (await channel.invokeListMethod('importHistory', limit) ?? [])
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+  Future<bool> requestSendSms() async =>
+      await channel.invokeMethod<bool>('requestSendSms') ?? false;
+  Future<int> sendSms(String address, String body) async =>
+      ((await channel.invokeMapMethod<String, dynamic>('sendSms', {
+                'address': address,
+                'body': body,
+              }))?['parts']
+              as num?)
+          ?.toInt() ??
+      0;
   Future<bool> requestNotifications() async =>
       await channel.invokeMethod<bool>('requestNotifications') ?? false;
   Future<List<Map<String, dynamic>>> peek() async =>
@@ -22,6 +40,8 @@ class SmsPlatform {
   Future<bool> lock() async =>
       await channel.invokeMethod<bool>('lock') ?? false;
   Future<void> unlock() => channel.invokeMethod('unlock');
+  Future<void> setForegroundSync(bool enabled) =>
+      channel.invokeMethod('foregroundSync', enabled);
   Future<Map<String, dynamic>> identity() async =>
       Map<String, dynamic>.from((await channel.invokeMapMethod('identity'))!);
   Future<String> sign(String value) async =>

@@ -23,6 +23,9 @@ class SmsMessage {
   final double confidence, risk;
   final bool needsReview, llmPending, archived;
   final Map<String, dynamic>? primaryClassification;
+  final List<Map<String, dynamic>> attachments;
+  final String contentKind;
+  final bool attachmentsTruncated;
   const SmsMessage({
     required this.id,
     required this.sender,
@@ -39,6 +42,9 @@ class SmsMessage {
     this.correctedCategory = '',
     this.llmPending = false,
     this.primaryClassification,
+    this.attachments = const [],
+    this.contentKind = 'sms',
+    this.attachmentsTruncated = false,
     this.syncState = 'pending',
     this.confidence = 0,
     this.risk = 0,
@@ -77,6 +83,44 @@ class SmsMessage {
         throw const FormatException('Invalid primary classification');
       }
     }
+    final rawAttachments = j['attachments'] ?? const [];
+    if (rawAttachments is! List || rawAttachments.length > 100) {
+      throw const FormatException('Invalid message attachments');
+    }
+    var attachmentBytes = 0;
+    final attachments = <Map<String, dynamic>>[];
+    for (final item in rawAttachments) {
+      if (item is! Map ||
+          item['filename'] is! String ||
+          (item['filename'] as String).length > 160 ||
+          item['mime_type'] is! String ||
+          (item['mime_type'] as String).length > 100 ||
+          item['data_base64'] is! String ||
+          item['size'] is! int ||
+          (item['size'] as int) < 0) {
+        throw const FormatException('Invalid message attachment');
+      }
+      final data = item['data_base64'] as String;
+      final size = item['size'] as int;
+      if (data.length > 2 * 1024 * 1024 * 4 ~/ 3 + 4 ||
+          !RegExp(r'^[A-Za-z0-9+/]*={0,2}$').hasMatch(data) ||
+          ((data.length * 3) ~/ 4) -
+                  (data.endsWith('==')
+                      ? 2
+                      : data.endsWith('=')
+                      ? 1
+                      : 0) !=
+              size) {
+        throw const FormatException('Invalid message attachment encoding');
+      }
+      attachmentBytes += size;
+      if (attachmentBytes > 2 * 1024 * 1024) {
+        throw const FormatException('Message attachments exceed size limit');
+      }
+      attachments.add(
+        Map<String, dynamic>.unmodifiable(Map<String, dynamic>.from(item)),
+      );
+    }
     return SmsMessage(
       id: j['message_id'] as String,
       sender: j['sender'] as String,
@@ -102,6 +146,9 @@ class SmsMessage {
       risk: risk,
       needsReview: j['needs_review'] as bool? ?? true,
       archived: j['archived'] as bool? ?? false,
+      contentKind: j['content_kind'] as String? ?? 'sms',
+      attachments: List.unmodifiable(attachments),
+      attachmentsTruncated: j['attachments_truncated'] as bool? ?? false,
     );
   }
   Map<String, dynamic> toJson() => {
@@ -126,5 +173,8 @@ class SmsMessage {
     'risk': risk,
     'needs_review': needsReview,
     'archived': archived,
+    if (contentKind != 'sms') 'content_kind': contentKind,
+    if (attachments.isNotEmpty) 'attachments': attachments,
+    if (attachmentsTruncated) 'attachments_truncated': true,
   };
 }

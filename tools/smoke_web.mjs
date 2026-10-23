@@ -1,6 +1,6 @@
 // Tests the real frontend TypeScript against an isolated Go process (no model required).
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdtemp, mkdir, readFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -15,6 +15,8 @@ const { build } = require('esbuild')
 await mkdir(path.join(root, 'artifacts'), { recursive: true })
 const directory = await mkdtemp(path.join(root, 'artifacts/web-smoke-'))
 const bundle = path.join(directory, 'frontend.mjs')
+const executable = path.join(root, 'artifacts', process.platform === 'win32' ? 'privrelay-server.exe' : 'privrelay-server')
+execFileSync('go', ['build', '-o', executable, '.'], { cwd: path.join(root, 'server'), windowsHide: true, timeout: 180000 })
 await build({
   stdin: { contents: `export * from './src/api/client'; export * from './src/api/endpoints'; export * from './src/utils/pairing'; export * from './src/utils/vault'; export * from './src/stores/messages'; export { createPinia, setActivePinia } from 'pinia'`, resolveDir: path.join(root, 'web_client') },
   bundle: true, platform: 'node', format: 'esm', outfile: bundle,
@@ -25,7 +27,6 @@ await once(reservation, 'listening')
 const port = reservation.address().port
 await new Promise(resolve => reservation.close(resolve))
 const base = `http://127.0.0.1:${port}`
-const executable = path.join(root, 'artifacts', process.platform === 'win32' ? 'privrelay-server.exe' : 'privrelay-server')
 const server = spawn(executable, ['-listen', `127.0.0.1:${port}`, '-data', path.join(directory, 'store.enc'), '-classifier', '', '-web', path.join(root, 'web_client/dist')], { windowsHide: true })
 let llmServer
 let output = '', failure

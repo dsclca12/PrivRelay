@@ -1,11 +1,12 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Text;
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../data/repository.dart';
+import '../core/localized_text.dart';
 import '../features/inbox.dart';
 import '../features/ai_settings.dart';
 import '../features/settings.dart';
@@ -47,6 +48,13 @@ class _RelayAppState extends ConsumerState<RelayApp>
     routes: [
       GoRoute(path: '/welcome', builder: (_, _) => const WelcomePage()),
       GoRoute(
+        path: '/compose',
+        builder: (_, state) => ComposeSmsPage(
+          recipient: state.uri.queryParameters['to'] ?? '',
+          body: state.uri.queryParameters['body'] ?? '',
+        ),
+      ),
+      GoRoute(
         path: '/message/:id',
         builder: (_, s) => DetailPage(id: s.pathParameters['id']!),
       ),
@@ -75,7 +83,23 @@ class _RelayAppState extends ConsumerState<RelayApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    r.addListener(_handlePendingCompose);
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _handlePendingCompose(),
+    );
     unawaited(r.sync());
+  }
+
+  void _handlePendingCompose() {
+    final pending = r.pendingCompose;
+    if (pending == null) return;
+    r.pendingCompose = null;
+    router.go(
+      Uri(
+        path: '/compose',
+        queryParameters: {'to': pending['address']!, 'body': pending['body']!},
+      ).toString(),
+    );
   }
 
   @override
@@ -96,6 +120,7 @@ class _RelayAppState extends ConsumerState<RelayApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    r.removeListener(_handlePendingCompose);
     router.dispose();
     super.dispose();
   }
@@ -106,7 +131,9 @@ class _RelayAppState extends ConsumerState<RelayApp>
     return MaterialApp.router(
       title: 'PrivRelay',
       debugShowCheckedModeBanner: false,
-      locale: const Locale('zh', 'CN'),
+      locale: r.languagePreference == 'system'
+          ? null
+          : Locale(r.languagePreference),
       supportedLocales: const [Locale('zh', 'CN'), Locale('en')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
       theme: ThemeData(
@@ -211,12 +238,12 @@ class Shell extends ConsumerWidget {
         title: const Text('PrivRelay'),
         actions: [
           IconButton(
-            tooltip: '同步',
+            tooltip: localizeText(context, '同步'),
             onPressed: r.busy ? null : () => r.sync(),
             icon: const Icon(Icons.sync),
           ),
           IconButton(
-            tooltip: '诊断',
+            tooltip: localizeText(context, '诊断'),
             onPressed: () => context.push('/diagnostics'),
             icon: const Icon(Icons.monitor_heart_outlined),
           ),
@@ -262,18 +289,21 @@ class Shell extends ConsumerWidget {
         selectedIndex: index,
         onDestinationSelected: (i) =>
             context.go(['/inbox', '/quarantine', '/settings'][i]),
-        destinations: const [
+        destinations: [
           NavigationDestination(
             icon: Icon(Icons.inbox_outlined),
             selectedIcon: Icon(Icons.inbox),
-            label: '收件箱',
+            label: localizeText(context, '收件箱'),
           ),
           NavigationDestination(
             icon: Icon(Icons.shield_outlined),
             selectedIcon: Icon(Icons.shield),
-            label: '拦截箱',
+            label: localizeText(context, '拦截箱'),
           ),
-          NavigationDestination(icon: Icon(Icons.tune), label: '设置'),
+          NavigationDestination(
+            icon: Icon(Icons.tune),
+            label: localizeText(context, '设置'),
+          ),
         ],
       ),
     );
@@ -313,13 +343,13 @@ class WelcomePage extends ConsumerWidget {
               contentPadding: EdgeInsets.zero,
               leading: Icon(Icons.cloud_outlined),
               title: Text('自托管分类'),
-              subtitle: Text('配对后服务器能够读取短信正文，本版不提供端到端加密。'),
+              subtitle: Text('短信正文在设备上端到端加密后同步，服务器不能读取或分类；当前客户端暂不提供自动分类。'),
             ),
             const ListTile(
               contentPadding: EdgeInsets.zero,
               leading: Icon(Icons.notifications_none),
               title: Text('关于拦截'),
-              subtitle: Text('本版不是默认短信应用，只隔离本应用消息；不能阻止系统短信应用的通知。'),
+              subtitle: Text('可在设置中选择申请默认短信角色；未切换时仅管理本应用消息，不能关闭系统短信应用的通知。'),
             ),
             const SizedBox(height: 24),
             FilledButton.icon(

@@ -11,6 +11,36 @@ import (
 	"strings"
 )
 
+func deviceRole(d Device) string {
+	if d.Role == "" {
+		return "admin"
+	} // Backward compatibility for pre-role snapshots.
+	return d.Role
+}
+
+func authorizedRole(d Device, path, method string) bool {
+	role := deviceRole(d)
+	if role == "admin" {
+		return true
+	}
+	if path == "/api/v1/session" && (method == "POST" || method == "DELETE") {
+		return true
+	}
+	if method == "GET" {
+		return role == "editor" || role == "viewer"
+	}
+	if role == "viewer" {
+		return false
+	}
+	adminOnly := path == "/api/v1/pairing-codes" || path == "/api/v1/feedback/export" ||
+		strings.HasPrefix(path, "/api/v1/feedback/") && method == "PUT" ||
+		path == "/api/v1/filter/rules" && method == "PUT" ||
+		path == "/api/v1/ai/settings" && method == "PUT" || path == "/api/v1/ai/test" ||
+		path == "/api/v2/legacy-migration" || strings.HasPrefix(path, "/api/v1/devices/") &&
+		(method == "DELETE" || strings.HasSuffix(path, "/role"))
+	return !adminOnly
+}
+
 var categories = map[string]bool{"personal": true, "otp": true, "service": true, "transaction": true, "marketing": true, "suspicious": true, "uncertain": true}
 
 // Classification and ScoreDecision mirror the pinned upstream API contracts.

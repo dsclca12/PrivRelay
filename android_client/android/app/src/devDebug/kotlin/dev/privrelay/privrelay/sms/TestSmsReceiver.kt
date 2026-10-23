@@ -25,7 +25,8 @@ class TestSmsReceiver : BroadcastReceiver() {
         val id = Spool(context).use { it.insert(sender, body, stamp, sub, slot) }
         NativeBridge.changed()
         SyncWorker.enqueue(context)
-        resultData = "message_id=$id spool_count=" + Spool(context).use { it.count() }
+        resultData = "message_id=$id spool_count=" + Spool(context).use { it.count() } +
+            " received_at=$stamp subscription_id=$sub slot=$slot"
     }
 
     private fun longExtra(intent: Intent, vararg keys: String): Long? =

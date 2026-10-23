@@ -11,6 +11,7 @@ class LocalRepository extends RelayRepository {
   LocalRepository(super.db) {
     onboarded = true;
     permissions = {'sms': false};
+    languagePreference = 'zh';
   }
   @override
   Future<void> sync() async {}

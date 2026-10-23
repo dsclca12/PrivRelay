@@ -25,6 +25,8 @@ For Docker, run `docker compose up --build`; the default bind address is loopbac
 
 Training commands accept local files supplied by the operator. This repository does not download, ship, or recreate the project’s private training corpora. Check the rights and privacy conditions for every dataset before using it. Keep data, reports containing row-level information, SQLite files, credentials, checkpoints, and training logs out of public commits. See [the release and data policy](docs/release-and-data-policy.md).
 
+PrivRelay server exports are not ingested automatically. For explicitly authorized training data, download an export with purpose `training` and text inclusion enabled, then use `scripts/import_privrelay_feedback.py` to create a mode-restricted local JSONL. The importer strips sender/message IDs, deduplicates exact text/label rows, and marks all rows human verified and training only. This conversion does not train, publish, or upload a model. Review [the detailed policy](docs/release-and-data-policy.md) before use.
+
 ## License
 
 The source and included fine-tuned model are offered under Apache License 2.0, subject to the upstream hfl/rbt3 terms and the provenance note in the model card. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

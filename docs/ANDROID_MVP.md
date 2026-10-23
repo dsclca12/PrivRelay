@@ -2,13 +2,14 @@
 
 [项目首页](../README.md) · [文档索引](README.md) · [部署指南](DEPLOYMENT.md)
 
-本版包含 Flutter/Kotlin Android 客户端、单用户 Go 自托管参考服务和初版 Web 控制台。[项目设计](PROJECT_DESIGN.md)中的 PostgreSQL、默认短信应用角色和完整机型验收矩阵属于后续交付，不应将本版作为全部设计目标已验收的生产版本。
+本版包含 Flutter/Kotlin Android 客户端、Go 自托管服务和初版 Web 控制台。服务端已支持 PostgreSQL 加密租户快照与设备级角色；数据库仍不是逐实体关系表，也没有独立用户/组账户。Android 现在可由用户主动申请默认 SMS 角色，接入 SMS_DELIVER、系统 SMS 收件箱、MMS 下载和附件导入、SENDTO composer 与快捷回复。MMS 附件随消息对象端到端加密同步，单条消息最多收录 2 MiB 附件；超过上限的附件继续保存在系统 Provider 并在应用详情提示。完整机型验收矩阵仍未完成。
 
 当前客户端配对使用[端到端加密](END_TO_END_ENCRYPTION.md)。下文服务端模型分类／隔离闭环描述旧明文协议与已迁移历史；当前 E2EE 新短信不会上传正文供服务器分类，也没有端侧自动分类实现。恢复、归档与 `corrected_category` 纠错字段在客户端写入密文同步，不进入服务端审核队列。
 
 ## 已实现的闭环
 
-- 用户明确授权后接收新短信，不申请 READ_SMS，不导入系统历史。
+- 用户明确授权后接收新短信；历史导入仅在用户主动点击时申请 `READ_SMS`，每次读取最近最多 5,000 条系统收件箱 SMS 记录。实时接收与历史导入使用发件人、正文、时间和订阅 ID 派生的确定性 UUIDv7，写入本地加密库并进入现有同步队列，避免同条短信重复导入。
+- 短信发送由用户从设置页填写号码和正文，确认发送内容及潜在运营商费用后，才单独申请 `SEND_SMS` 并交给 Android `SmsManager`；不报告虚假的送达确认。
 - 原生 Receiver 在返回前写入 AES-GCM 加密 SQLite spool，密钥位于 Android Keystore；分段 PDU 合并，记录时间、subscriptionId 与槽位。
 - UUIDv7 消息 ID；持久化去重墓碑在 spool 消费后仍保留。Dart 的 Drift 事务提交之后才 ACK 原生记录。
 - Drift + SQLCipher 业务数据库；密钥通过 flutter_secure_storage 保存。关闭系统备份。
@@ -24,7 +25,8 @@
 - OpenAI 兼容 LLM 配置、直接分类或轻量模型复核、独立授权的自动隔离及合成测试；默认连接配置为空，详见 [AI 分类](AI_CLASSIFICATION.md)。
 - 列表正文隐藏；全应用默认 `FLAG_SECURE` 防截屏／录屏并保护最近任务画面，设置中可关闭。
 - 新消息提醒支持全部、重要与风险（个人／验证码／交易／可疑／不确定）、关闭；所有通知仍不含正文。
-- 自动本地保留期限可选永久／30／90／365 天；启用后立即与同步时清理过期已上传正常记录，保留隔离、未上传和待处理操作关联的消息。服务器不删除；重配对或远程更新可能重新拉取。
+- 自动本地保留期限可选永久／30／90／365 天；启用后立即与同步时清理过期已上传正常记录，保留隔离、未上传和待处理操作关联的消息。服务器期限默认关闭；管理员可为 E2EE 密文单独配置期限并通过同步墓碑删除各设备副本，旧明文迁移数据、备份与离线设备副本不受该设置即时清除。
+- 前台实时同步可由用户选择开启；它需要通知权限、显示持续通知并提高 WorkManager 消费本地加密暂存队列的及时性。关闭后台补发时会同时关闭前台服务；重启设备后需重新手动开启。Android 15 的 `dataSync` 服务有运行时限，强行停止、省电策略和 OEM 行为仍可能中断，不承诺永久运行或秒级送达。
 
 ## 构建
 
@@ -59,7 +61,7 @@ dev 的网络配置只为 localhost / 127.0.0.1 / 10.0.2.2 开放 HTTP，并且�
 
 ## 自托管参考服务
 
-服务启动、分类器配置、配对码、Docker、HTTPS 与数据备份见[部署指南](DEPLOYMENT.md)；消息字段、浏览器会话和管理台对接见[后端 API](BACKEND_API.md)。当前参考服务为单用户、单进程加密快照实现，尚无 PostgreSQL、多租户、多实例及容量保障。
+服务启动、分类器配置、配对码、Docker、HTTPS 与数据备份见[部署指南](DEPLOYMENT.md)；消息字段、浏览器会话和管理台对接见[后端 API](BACKEND_API.md)。服务支持加密文件快照或 PostgreSQL tenant snapshot；每个进程绑定一个租户，同租户多实例由 advisory lock 拒绝。它仍是整租户快照，不是关系表，也没有独立用户／组账户或容量保障。
 
 ## Android 初测
 
@@ -71,7 +73,11 @@ cd android_client
 flutter test integration_test/mvp_test.dart --flavor dev -d <设备序列号> --dart-define=PAIRING_CODE=<刚生成的配对码> --dart-define=VAULT_PASSPHRASE=synthetic-test-passphrase
 ```
 
-当前脚本使用合成数据，覆盖签名配对 → 原生暂存 → 本地加密 → E2EE 离线失败与重试 → 合成隔离记录的 UI 恢复 → 独立纠错字段 → 撤销与历史保留。隔离记录由测试夹具构造，不验证真实模型或黑名单自动分类。测试结束会解除配对；此修订尚未在真机执行。测试运行器使用的 APK 不是交付主程序，完成后需重新构建安装 `lib/main.dart` 的 APK。
+当前脚本使用合成数据，覆盖签名配对 → 原生暂存 → 本地加密 → E2EE 离线失败与重试 → 合成隔离记录的 UI 恢复 → 独立纠错字段 → 最后管理员保护和本机解除配对。隔离记录由测试夹具构造，不验证真实模型或黑名单自动分类。测试运行器使用的 APK 不是交付主程序，完成后需重新构建安装 `lib/main.dart` 的 APK。
+
+专用测试设备可给测试命令增加 `--dart-define=DEVICE_SMS_HISTORY_SMOKE=true`。当 Flutter 测试 APK 安装后，在 20 秒等待期内从另一终端执行 `adb shell pm grant dev.privrelay.privrelay.dev android.permission.READ_SMS`，以验证系统收件箱查询字段与 5,000 条上限。测试只断言数量和字段类型，不输出或上传历史短信正文；完成后可用 `adb shell pm revoke dev.privrelay.privrelay.dev android.permission.READ_SMS` 撤回测试授权。
+
+2026-10-23 在 USB 连接的 `2304FPN6DC`（Android 15 / API 35）上运行上述完整合成集成测试，通过；另在测试包临时获得 `READ_SMS` 后验证系统收件箱读取字段和 5,000 条上限。历史正文未输出或上传，测试 APK 卸载后临时授权随包清理。测试使用隔离临时后端、合成短信和合成口令，没有发送真实短信。该验收覆盖一台 Android 15 设备，不代表其他系统版本、运营商收信、双卡、Doze、低电量或长时间断网已经验收。
 
 `devDebug` 额外提供受系统 DUMP 权限保护的 shell 合成短信 Receiver，用于测试普通后台进程回收后的 WorkManager 消费；所有 Release 和 prod 构建均不包含它。MethodChannel 的合成注入也仅对 dev Debug 开启。
 
@@ -79,26 +85,28 @@ flutter test integration_test/mvp_test.dart --flavor dev -d <设备序列号> --
 
 ```powershell
 # 注入一条可指定发件人、正文、时间戳、订阅与槽位的合成短信
-adb shell am broadcast -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver --receiver-ordered `
+adb shell am broadcast -a dev.privrelay.TEST -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver `
   --es sender "+8613800000000" --es body "【测试】验证码 123456" --el timestamp 0 --ei subscription_id 1 --ei slot 0
 
 # 用默认后台恢复样本注入（省略任意参数即使用默认值）
-adb shell am broadcast -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver --receiver-ordered
+adb shell am broadcast -a dev.privrelay.TEST -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver
 
 # 查询原生暂存队列长度，输出形如 data="spool_count=1"
-adb shell am broadcast -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver --receiver-ordered --ez status true
+adb shell am broadcast -a dev.privrelay.TEST -n dev.privrelay.privrelay.dev/dev.privrelay.privrelay.sms.TestSmsReceiver --ez status true
 ```
+
+上述命令必须包含 `-a dev.privrelay.TEST`；在 Android 15 上省略 action 时，shell 会把额外参数解释成默认 Intent 字段。重复测试要使用相同的发件人、正文、时间戳和订阅 ID 才能验证幂等去重。
 
 `--el timestamp 0` 表示由设备当前时间补齐；相同发件人、正文、时间戳和订阅的消息会按指纹去重，重复广播返回同一 `message_id`。注入后立即触发一次同步任务；Receiver 仅在 `BuildConfig.DEBUG` 且 flavor 为 `dev` 时生效。
 
 ## 使用边界
 
-- 本版不是默认短信应用，不能抑制系统短信应用的通知，不能向运营商拦截短信，也不提供短信发送。
+- 默认 SMS 角色为用户可选项；未切换时仍不能抑制系统短信应用通知。启用后，新 SMS 写入系统 Provider 并进入本地加密队列；MMS 下载完成后读取发件地址、文本和附件并进入同一加密队列。附件最多 2 MiB，超过上限的附件留在系统 Provider，应用详情会提示未同步。系统历史导入目前只读 SMS 收件箱，每次最多 5,000 条。应用内发送需显式确认并可能收费；Android 呼叫快捷回复由系统明确触发。`SENDTO` 已路由到应用 composer，但运营商真实投递状态不可用。
 - E2EE 新短信正文在客户端加密后同步，服务端只保存信封与元数据。未迁移的历史仍受服务端存储加密保护，拥有存储密钥的管理员可读；TLS、本地加密和 E2EE 是不同保护层。
-- 不提供前台常驻服务，系统省电/OEM 自启动限制可能延迟后台补发；WorkManager 不承诺秒级送达。强行停止应用会暂停广播和任务，用户需再次打开。
+- 前台实时同步默认关闭；用户开启后显示持续通知并增加耗电。系统省电/OEM 自启动限制及 Android 15 的 `dataSync` 前台服务时限仍可能延迟后台补发；WorkManager 不承诺秒级送达。强行停止应用会暂停广播和任务，用户需再次打开。
 - 智能过滤和自动隔离在本 MVP 共用隔离箱，均抑制本应用隔离通知；没有验证为可自动隔离的模型时只依靠明确用户规则，不宣称真实误拦截率。
-- 尚未完成 Android 7/10/12/14/15 多版本、真实双卡来信、30 分钟断网、Doze、低电量及设备重启的完整验收。合成 SIM 槽位验证不等于实际双卡网络验收。
-- 首版为中文界面，支持系统深色模式和字体缩放；应用锁已实现，英文完整翻译、历史导入和前台实时模式待扩展。
+- 尚未完成 Android 7/10/12/14/15 多版本、真实双卡来信、MMS 运营商下载、30 分钟断网、Doze、低电量及设备重启的完整验收。合成 SIM 槽位验证不等于实际双卡网络验收。
+- 界面支持跟随系统、简体中文和英文切换，语言偏好保存在本机；主要页面文案已本地化，模型返回的动态原因可能保留原语言。应用锁已实现。历史导入与单条短信发送已实现；前台实时同步可选启用，但扩展设备与长稳验收仍待完成。
 
 依赖许可证与权限说明见[依赖与权限](DEPENDENCIES.md)；历史测试证据见[Android 初步测试报告](ANDROID_TEST_REPORT.md)。
 

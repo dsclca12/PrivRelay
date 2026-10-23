@@ -69,14 +69,17 @@ class RelayRepository extends ChangeNotifier {
   bool hidePreviews = false, screenProtection = true;
   bool appLockEnabled = false, appUnlocked = false, authenticating = false;
   String notificationMode = 'all';
+  String languagePreference = 'system';
   int retentionDays = 0;
   bool onboarded = false,
       busy = false,
       rePair = false,
       backgroundEnabled = true,
+      foregroundSyncEnabled = false,
       _closed = false;
   int pending = 0, operationCount = 0;
   Map<String, dynamic> permissions = {};
+  Map<String, String>? pendingCompose;
   StreamSubscription? _network;
   IOWebSocketChannel? _socket;
   Timer? _retry, _wsRetry;
@@ -108,6 +111,18 @@ class RelayRepository extends ChangeNotifier {
       });
       p.channel.setMethodCallHandler((call) async {
         if (call.method == 'changed') await r.sync();
+        if (call.method == 'composeIntent') {
+          final args = Map<String, dynamic>.from(call.arguments as Map);
+          r.pendingCompose = {
+            'address': args['address'] as String? ?? '',
+            'body': args['body'] as String? ?? '',
+          };
+          r.changed();
+        }
+        if (call.method == 'statusChanged') {
+          r.permissions = await p.status();
+          r.changed();
+        }
       });
       r.connectSocket();
     }
@@ -128,8 +143,11 @@ class RelayRepository extends ChangeNotifier {
     hidePreviews = await db.pref('hide_previews') == 'true';
     screenProtection = await db.pref('screen_protection') != 'false';
     notificationMode = await db.pref('notification_mode') ?? 'all';
+    languagePreference = await db.pref('language') ?? 'system';
     retentionDays = int.tryParse(await db.pref('retention_days') ?? '') ?? 0;
     permissions = await platform.status();
+    foregroundSyncEnabled = permissions['foreground_sync'] == true;
+    await db.setPref('foreground_sync', '$foregroundSyncEnabled');
     state = rePair
         ? '需要重新配对'
         : token == null
@@ -196,6 +214,42 @@ class RelayRepository extends ChangeNotifier {
     changed();
   }
 
+  Future<bool> requestDefaultSmsRole() async {
+    final accepted = await platform.requestSmsRole();
+    permissions = await platform.status();
+    changed();
+    return accepted;
+  }
+
+  Future<int> importSystemHistory() async {
+    if (!await platform.requestReadSms()) {
+      throw StateError('短信读取权限未授予，未导入任何数据');
+    }
+    // The native query caps each explicit import at the most recent 5,000.
+    // Stable system IDs make repeated imports idempotent.
+    final rows = await platform.importHistory(5000);
+    final imported = await db.ingestHistory(
+      rows.map(SmsMessage.fromJson).toList(),
+    );
+    await sync();
+    return imported;
+  }
+
+  Future<int> sendSms(String address, String body) async {
+    final normalizedAddress = address.trim();
+    final normalizedBody = body.trim();
+    if (normalizedAddress.isEmpty || normalizedBody.isEmpty) {
+      throw const FormatException('请输入收件号码和短信正文');
+    }
+    if (normalizedAddress.length > 40 || normalizedBody.length > 5000) {
+      throw const FormatException('收件号码或短信正文超出长度限制');
+    }
+    if (!await platform.requestSendSms()) {
+      throw StateError('短信发送权限未授予');
+    }
+    return platform.sendSms(normalizedAddress, normalizedBody);
+  }
+
   Future<void> requestNotifications() async {
     await platform.requestNotifications();
     permissions = await platform.status();
@@ -259,15 +313,34 @@ class RelayRepository extends ChangeNotifier {
       if (salt == null || salt.isEmpty) {
         throw const FormatException('服务器未提供加密参数');
       }
-      final probe = await http.get<Map<String, dynamic>>(
-        '$target/api/v2/encrypted-messages',
-        options: Options(headers: {'Authorization': 'Bearer $newToken'}),
-        queryParameters: {'cursor': '0', 'limit': 1},
-      );
-      final existing = probe.data?['messages'] as List;
-      if (existing.isNotEmpty) {
+      final existingRecords = <Map<String, dynamic>>[];
+      var probeCursor = 0;
+      var probeMore = true;
+      for (
+        var page = 0;
+        page < 100 && probeMore && existingRecords.isEmpty;
+        page++
+      ) {
+        final probe = await http.get<Map<String, dynamic>>(
+          '$target/api/v2/encrypted-messages',
+          options: Options(headers: {'Authorization': 'Bearer $newToken'}),
+          queryParameters: {'cursor': '$probeCursor', 'limit': 50},
+        );
+        final response = probe.data ?? const <String, dynamic>{};
+        final rows = response['messages'] as List? ?? const [];
+        existingRecords.addAll(
+          rows
+              .map((item) => Map<String, dynamic>.from(item as Map))
+              .where((item) => item['deleted'] != true),
+        );
+        final next = response['cursor'];
+        if (next is! num || next <= probeCursor) break;
+        probeCursor = next.toInt();
+        probeMore = response['has_more'] == true;
+      }
+      if (existingRecords.isNotEmpty) {
         try {
-          final envelope = existing.first as Map;
+          final envelope = existingRecords.first;
           final plain = await platform.decryptVault(
             envelope['ciphertext'] as String,
             vaultPassphrase!,
@@ -584,6 +657,18 @@ class RelayRepository extends ChangeNotifier {
       await db.transaction(() async {
         for (final item in data['messages'] as List) {
           final envelope = Map<String, dynamic>.from(item);
+          if (envelope['deleted'] == true) {
+            final id = envelope['message_id'];
+            final revision = envelope['revision'];
+            if (id is! String ||
+                id.isEmpty ||
+                revision is! num ||
+                revision <= 0) {
+              throw const FormatException('删除确认身份或版本无效');
+            }
+            await db.removeRemote(id);
+            continue;
+          }
           final plain = await platform.decryptVault(
             envelope['ciphertext'] as String,
             vaultPassphrase!,
@@ -921,7 +1006,37 @@ class RelayRepository extends ChangeNotifier {
   Future<void> setBackground(bool enabled) async {
     await db.setPref('background', '$enabled');
     backgroundEnabled = enabled;
+    if (!enabled && foregroundSyncEnabled) {
+      await setForegroundSync(false);
+    }
     await platform.channel.invokeMethod('background', enabled);
+    changed();
+  }
+
+  Future<void> setLanguage(String language) async {
+    if (!{'system', 'zh', 'en'}.contains(language)) {
+      throw const FormatException('Unsupported language');
+    }
+    await db.setPref('language', language);
+    languagePreference = language;
+    changed();
+  }
+
+  Future<void> setForegroundSync(bool enabled) async {
+    if (enabled && !backgroundEnabled) {
+      throw StateError('请先开启后台补发');
+    }
+    if (enabled && permissions['notifications'] != true) {
+      if (!await platform.requestNotifications()) {
+        throw StateError('需要允许通知，才能启用持续显示的前台同步');
+      }
+      permissions = await platform.status();
+      foregroundSyncEnabled = permissions['foreground_sync'] == true;
+      await db.setPref('foreground_sync', '$foregroundSyncEnabled');
+    }
+    await platform.setForegroundSync(enabled);
+    await db.setPref('foreground_sync', '$enabled');
+    foregroundSyncEnabled = enabled;
     changed();
   }
 

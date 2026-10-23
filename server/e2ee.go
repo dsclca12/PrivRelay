@@ -98,12 +98,12 @@ func (s *Server) syncEncryptedMessages(w http.ResponseWriter, r *http.Request, d
 				return
 			}
 		}
-		if len(m.ID) < 16 || len(m.ID) > 100 || m.Received <= 0 || len(m.Ciphertext) > 128*1024 {
+		if len(m.ID) < 16 || len(m.ID) > 100 || m.Received <= 0 || len(m.Ciphertext) > 4*1024*1024 {
 			writeJSON(w, 422, map[string]string{"error": "encrypted_message_contract"})
 			return
 		}
 		blob, err := base64.RawURLEncoding.DecodeString(m.Ciphertext)
-		if err != nil || len(blob) < 29 || len(blob) > 96*1024 {
+		if err != nil || len(blob) < 29 || len(blob) > 3*1024*1024 {
 			writeJSON(w, 422, map[string]string{"error": "encrypted_message_contract"})
 			return
 		}

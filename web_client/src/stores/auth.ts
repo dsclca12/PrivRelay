@@ -27,6 +27,10 @@ const ERROR_TEXT: Record<string, string> = {
   rules_contract: '规则参数不合法（模式 / 阈值 / 列表长度）',
   sender_length: '名单条目超过 128 字符',
   operation_conflict: '该操作已被其他请求修改，请刷新后重试',
+  insufficient_role: '当前账号角色没有执行此操作的权限',
+  last_admin: '至少需要保留一个有效管理员',
+  role_contract: '设备角色值无效',
+  consent_withdrawn: '该样本的授权已撤回',
   category: '纠错类别不合法',
 }
 
@@ -38,6 +42,7 @@ export const useAuthStore = defineStore('auth', () => {
   const token = ref(getToken() ?? '')
   const deviceId = ref(getDeviceId())
   const deviceName = ref(getDeviceName())
+  const role = ref<'admin' | 'editor' | 'viewer'>('viewer')
   let pendingPairToken: string | null = null
   let pendingVaultPassphrase = ''
   let authenticationGeneration = 0
@@ -90,6 +95,7 @@ export const useAuthStore = defineStore('auth', () => {
       checkAttempt()
       deviceId.value = session.device_id
       deviceName.value = session.name
+      role.value = session.role
       setDeviceId(session.device_id)
       setDeviceName(session.name)
       clearToken()
@@ -139,6 +145,7 @@ export const useAuthStore = defineStore('auth', () => {
       if (attempt !== authenticationGeneration) return false
       deviceId.value = session.device_id
       deviceName.value = session.name
+      role.value = session.role
       authenticated.value = true
       return true
     } catch {
@@ -167,6 +174,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = ''
     deviceId.value = ''
     deviceName.value = ''
+    role.value = 'viewer'
     clearSession()
     clearVaultCredentials()
     if (options.expired) {
@@ -175,5 +183,5 @@ export const useAuthStore = defineStore('auth', () => {
     void router.replace('/login')
   }
 
-  return { token, deviceId, deviceName, paired, pair, useToken, restore, logout }
+  return { token, deviceId, deviceName, role, paired, pair, useToken, restore, logout }
 })

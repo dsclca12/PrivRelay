@@ -131,6 +131,7 @@ func TestClassifierRestoreFeedbackCursorAndRevoke(t *testing.T) {
 	if len(s.store.Feedback) != 1 || s.store.Messages[testMessage().ID].Category != "marketing" {
 		t.Fatal("feedback must not relabel predictions")
 	}
+	s.store.Devices["backup-admin-0001"] = Device{ID: "backup-admin-0001", Role: "admin", Active: true, Expires: time.Now().Add(time.Hour).Unix()}
 	if call(t, s, "DELETE", "/api/v1/devices/test-device-0001", token, nil).Code != 200 {
 		t.Fatal("revoke")
 	}

@@ -13,8 +13,10 @@ class MainActivity : FlutterActivity() {
         super.onCreate(savedInstanceState)
     }
     private var bridge:NativeBridge?=null
-    override fun configureFlutterEngine(engine:FlutterEngine){super.configureFlutterEngine(engine);bridge=NativeBridge(this,engine.dartExecutor.binaryMessenger,this)}
+    override fun configureFlutterEngine(engine:FlutterEngine){super.configureFlutterEngine(engine);bridge=NativeBridge(this,engine.dartExecutor.binaryMessenger,this);bridge?.handleIntent(intent)}
+    override fun onNewIntent(intent:android.content.Intent){super.onNewIntent(intent);setIntent(intent);bridge?.handleIntent(intent)}
     override fun onRequestPermissionsResult(request:Int,permissions:Array<out String>,grants:IntArray){super.onRequestPermissionsResult(request,permissions,grants);if(request==721)bridge?.permissionResult(grants)}
-    override fun onActivityResult(request:Int,result:Int,data:android.content.Intent?){super.onActivityResult(request,result,data);if(request==722)bridge?.authenticationResult(result)}
+    override fun onActivityResult(request:Int,result:Int,data:android.content.Intent?){super.onActivityResult(request,result,data);if(request==722)bridge?.authenticationResult(result);if(request==723)bridge?.smsRoleResult(result)}
+    override fun onResume(){super.onResume();android.os.Handler(mainLooper).postDelayed({bridge?.refreshStatus()},500)}
     override fun onDestroy(){bridge?.close();bridge=null;super.onDestroy()}
 }

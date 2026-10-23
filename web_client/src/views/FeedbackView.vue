@@ -15,7 +15,7 @@
         <el-option v-for="(label, key) in labels" :key="key" :value="key" :label="label" />
       </el-select>
       <el-button :loading="loading" @click="load">刷新</el-button>
-      <el-button @click="exportDialog = true">导出已通过样本</el-button>
+      <el-button v-if="auth.role === 'admin'" @click="exportDialog = true">导出已通过样本</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 14px" />
     <el-table class="feedback-table" v-loading="loading" :data="result?.feedback ?? []" row-key="operation_id" empty-text="暂无纠错记录">
@@ -32,10 +32,11 @@
           <span v-else>—</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="330" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="open(row.message_id)">查看短信</el-button>
-          <template v-if="row.review_status === 'pending_review'">
+          <el-button v-if="row.review_status !== 'withdrawn'" size="small" type="warning" :disabled="!!reviewing" @click="withdraw(row.operation_id)">撤回数据授权</el-button>
+          <template v-if="row.review_status === 'pending_review' && auth.role === 'admin'">
             <el-button size="small" type="success" :disabled="!!reviewing" @click="review(row.operation_id, 'approved')">通过</el-button>
             <el-button size="small" type="danger" :disabled="!!reviewing" @click="review(row.operation_id, 'rejected')">驳回</el-button>
           </template>
@@ -51,7 +52,8 @@
         </div>
         <div class="drawer-actions">
           <el-button size="small" @click="open(row.message_id)">查看短信</el-button>
-          <template v-if="row.review_status === 'pending_review'">
+          <el-button v-if="row.review_status !== 'withdrawn'" size="small" type="warning" :disabled="!!reviewing" @click="withdraw(row.operation_id)">撤回授权</el-button>
+          <template v-if="row.review_status === 'pending_review' && auth.role === 'admin'">
             <el-button size="small" type="success" :disabled="!!reviewing" @click="review(row.operation_id, 'approved')">通过</el-button>
             <el-button size="small" type="danger" :disabled="!!reviewing" @click="review(row.operation_id, 'rejected')">驳回</el-button>
           </template>
@@ -85,17 +87,19 @@
 import { onScopeDispose, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ApiError } from '../api/client'
-import { exportFeedback, getMessage, listFeedback, reviewFeedback } from '../api/endpoints'
+import { exportFeedback, getMessage, listFeedback, reviewFeedback, withdrawFeedback } from '../api/endpoints'
 import type { FeedbackPage, ReviewStatus } from '../api/endpoints'
 import type { Message } from '../api/types'
 import { errorText } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
+import { useAuthStore } from '../stores/auth'
 import { categoryMeta, formatDateTime } from '../utils/format'
 import MessageDetailDrawer from '../components/MessageDetailDrawer.vue'
 
-const labels: Record<ReviewStatus, string> = { pending_review: '待审核', approved: '已通过', rejected: '已驳回' }
+const labels: Record<ReviewStatus, string> = { pending_review: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' }
 const categoryLabel = (category: string) => categoryMeta(category).label
 const messages = useMessagesStore()
+const auth = useAuthStore()
 const filter = ref('pending_review'), page = ref(1), loading = ref(false), error = ref(''), reviewing = ref('')
 const result = ref<FeedbackPage | null>(null), detail = ref<Message | null>(null), drawer = ref(false)
 let generation = 0
@@ -178,6 +182,18 @@ async function review(id: string, status: 'approved' | 'rejected'): Promise<void
       ElMessage.error(e instanceof ApiError ? errorText(e.code) : '审核失败，请重试')
       await load()
     }
+  } finally { reviewing.value = '' }
+}
+
+async function withdraw(id: string): Promise<void> {
+  try {
+    await ElMessageBox.confirm('撤回后，该纠错样本将从后续导出中排除且无法恢复。已经下载的文件需要你自行删除。继续？', '撤回数据授权', { type: 'warning' })
+    reviewing.value = id
+    await withdrawFeedback(id)
+    ElMessage.success('已撤回，后续导出将排除此样本')
+    await load()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof ApiError ? errorText(error.code) : '撤回失败，请重试')
   } finally { reviewing.value = '' }
 }
 watch(filter, () => { if (page.value !== 1) page.value = 1; else void load() }, { flush: 'sync' })

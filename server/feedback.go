@@ -9,7 +9,7 @@ import (
 )
 
 func validReviewStatus(status string) bool {
-	return status == "pending_review" || status == "approved" || status == "rejected"
+	return status == "pending_review" || status == "approved" || status == "rejected" || status == "withdrawn"
 }
 
 func (s *Server) listFeedback(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +22,7 @@ func (s *Server) listFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows := []Feedback{}
-	counts := map[string]int{"pending_review": 0, "approved": 0, "rejected": 0}
+	counts := map[string]int{"pending_review": 0, "approved": 0, "rejected": 0, "withdrawn": 0}
 	corrections := map[string]int{}
 	for _, f := range s.store.Feedback {
 		// Older snapshots predate prediction provenance; fall back for display only.
@@ -30,11 +30,16 @@ func (s *Server) listFeedback(w http.ResponseWriter, r *http.Request) {
 			f.Predicted = s.store.Messages[f.MessageID].Category
 			f.Model = s.store.Messages[f.MessageID].Model
 		}
-		counts[f.Status]++
-		if f.Status == "approved" {
+		statusValue := f.Status
+		if f.WithdrawnAt != 0 {
+			statusValue = "withdrawn"
+		}
+		counts[statusValue]++
+		if statusValue == "approved" {
 			corrections[f.Predicted+"→"+f.Category]++
 		}
-		if status == "" || f.Status == status {
+		f.Status = statusValue
+		if status == "" || statusValue == status {
 			rows = append(rows, f)
 		}
 	}
@@ -53,6 +58,10 @@ func (s *Server) reviewFeedback(w http.ResponseWriter, r *http.Request, d Device
 	f, ok := s.store.Feedback[id]
 	if !ok {
 		writeJSON(w, 404, map[string]string{"error": "feedback_not_found"})
+		return
+	}
+	if f.WithdrawnAt != 0 {
+		writeJSON(w, 409, map[string]string{"error": "consent_withdrawn"})
 		return
 	}
 	var req struct {
@@ -83,6 +92,29 @@ func (s *Server) reviewFeedback(w http.ResponseWriter, r *http.Request, d Device
 	}
 }
 
+// Withdrawal is a durable tombstone: the correction can no longer be reviewed
+// or included in future exports, while its operation ID prevents replay from
+// restoring withdrawn data.
+func (s *Server) withdrawFeedback(w http.ResponseWriter, r *http.Request, d Device) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/feedback/"), "/withdraw")
+	f, ok := s.store.Feedback[id]
+	if !ok {
+		writeJSON(w, 404, map[string]string{"error": "feedback_not_found"})
+		return
+	}
+	if f.WithdrawnAt != 0 {
+		writeJSON(w, 200, map[string]string{"status": "withdrawn"})
+		return
+	}
+	before := s.snapshot()
+	f.WithdrawnAt, f.WithdrawnBy = time.Now().Unix(), d.ID
+	s.store.Feedback[id] = f
+	if s.commit(w, before) {
+		writeJSON(w, 200, map[string]string{"status": "withdrawn"})
+		s.broadcast()
+	}
+}
+
 // Export one bounded page at a time; approval alone never authorizes disclosure.
 func (s *Server) exportFeedback(w http.ResponseWriter, r *http.Request, d Device) {
 	var req struct {
@@ -101,7 +133,7 @@ func (s *Server) exportFeedback(w http.ResponseWriter, r *http.Request, d Device
 	}
 	rows := []Feedback{}
 	for _, f := range s.store.Feedback {
-		if f.Status == "approved" {
+		if f.Status == "approved" && f.WithdrawnAt == 0 {
 			rows = append(rows, f)
 		}
 	}
@@ -123,11 +155,12 @@ func (s *Server) exportFeedback(w http.ResponseWriter, r *http.Request, d Device
 	}
 	// Record consent metadata only; never duplicate message text or credentials.
 	before := s.snapshot()
-	s.store.Exports = append(s.store.Exports, ExportAudit{Device: d.ID, At: time.Now().Unix(), Purpose: req.Purpose, IncludeText: req.IncludeText, Count: len(samples)})
+	exportID := randomToken()
+	s.store.Exports = append(s.store.Exports, ExportAudit{ExportID: exportID, Device: d.ID, At: time.Now().Unix(), Purpose: req.Purpose, IncludeText: req.IncludeText, Count: len(samples)})
 	if len(s.store.Exports) > 1000 {
 		s.store.Exports = s.store.Exports[len(s.store.Exports)-1000:]
 	}
 	if s.commit(w, before) {
-		writeJSON(w, 200, map[string]any{"schema_version": 1, "samples": samples, "total": len(rows), "offset": start, "has_more": end < len(rows), "purpose": req.Purpose, "include_text": req.IncludeText})
+		writeJSON(w, 200, map[string]any{"schema_version": 1, "export_id": exportID, "consent": true, "samples": samples, "total": len(rows), "offset": start, "has_more": end < len(rows), "purpose": req.Purpose, "include_text": req.IncludeText})
 	}
 }

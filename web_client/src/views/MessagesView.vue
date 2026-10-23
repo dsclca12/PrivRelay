@@ -41,6 +41,7 @@
     <MessageTable
       :rows="rows"
       :loading="loading"
+      :show-restore="auth.role !== 'viewer'"
       empty-text="没有符合条件的消息"
       @select="openDetail"
       @restore="onRestore"
@@ -60,7 +61,8 @@
     <MessageDetailDrawer
       v-model="drawerVisible"
       :message="detail"
-      :allow-archive="true"
+      :allow-actions="auth.role !== 'viewer'"
+      :allow-archive="auth.role !== 'viewer'"
       @restore="detail && onRestore(detail)"
       @feedback="onFeedback"
       @archive="onArchive"
@@ -81,8 +83,10 @@ import { useMessagesStore } from '../stores/messages'
 import { useMessageSearch } from '../composables/useMessageSearch'
 import { CATEGORY_OPTIONS } from '../utils/format'
 import { useMessageActions } from '../composables/useMessageActions'
+import { useAuthStore } from '../stores/auth'
 
 const messages = useMessagesStore()
+const auth = useAuthStore()
 const actions = useMessageActions()
 
 const { keyword, categoryFilter, actionFilter, archivedFilter, page, pageSize, rows, total, loading, error, reload } = useMessageSearch()

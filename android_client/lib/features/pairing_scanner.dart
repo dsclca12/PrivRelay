@@ -1,7 +1,8 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Text;
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../core/pairing.dart';
+import '../core/localized_text.dart';
 
 class PairingScannerPage extends StatefulWidget {
   final bool allowHttp;

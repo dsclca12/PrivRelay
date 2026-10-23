@@ -109,7 +109,13 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			pendingFeedback++
 		}
 	}
-	writeJSON(w, 200, map[string]any{"messages": len(s.store.Messages) + len(s.store.EncryptedMessages), "encrypted_messages": len(s.store.EncryptedMessages), "e2ee_enabled": s.store.E2EEEnabled, "quarantined": quarantined, "restored": restored, "quarantine_reasons": reasons,
+	encryptedCount := 0
+	for _, m := range s.store.EncryptedMessages {
+		if !m.Deleted {
+			encryptedCount++
+		}
+	}
+	writeJSON(w, 200, map[string]any{"messages": len(s.store.Messages) + encryptedCount, "encrypted_messages": encryptedCount, "e2ee_enabled": s.store.E2EEEnabled, "quarantined": quarantined, "restored": restored, "quarantine_reasons": reasons,
 		"pending_classification": pending, "categories": counts, "authorized_devices": active,
 		"connected_devices": online, "pending_feedback": pendingFeedback, "revision": s.store.Revision,
 		"llm_mode": defaultString(s.store.LLM.Mode, "disabled"), "pending_llm_review": pendingLLM, "classifier_configured": s.classifier != "", "server_time": now})

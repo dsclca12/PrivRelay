@@ -95,6 +95,35 @@ class AppDatabase extends _$AppDatabase {
       );
     }
   });
+
+  /// Imports system history without duplicating messages already received live.
+  /// Older app versions used random live IDs, so deduplicate by source SMS fields too.
+  Future<int> ingestHistory(List<SmsMessage> batch) => transaction(() async {
+    var inserted = 0;
+    for (final message in batch) {
+      final existing = await customSelect(
+        "SELECT 1 FROM messages WHERE received = ? AND json_extract(payload, '\$.sender') = ? AND json_extract(payload, '\$.body') = ? AND json_extract(payload, '\$.subscription_id') = ? LIMIT 1",
+        variables: [
+          Variable.withInt(message.receivedAt),
+          Variable.withString(message.sender),
+          Variable.withString(message.body),
+          Variable.withInt(message.subscriptionId),
+        ],
+        readsFrom: {messages},
+      ).getSingleOrNull();
+      if (existing != null) continue;
+      await into(messages).insert(
+        MessagesCompanion.insert(
+          id: message.id,
+          payload: jsonEncode(message.toJson()),
+          received: message.receivedAt,
+        ),
+        mode: InsertMode.insertOrIgnore,
+      );
+      inserted++;
+    }
+    return inserted;
+  });
   Future<List<SmsMessage>> page({
     bool quarantine = false,
     bool archived = false,
@@ -208,6 +237,11 @@ class AppDatabase extends _$AppDatabase {
         state: const Value('acked'),
       ),
     );
+  }
+
+  Future<void> removeRemote(String id) async {
+    await (delete(operations)..where((t) => t.messageId.equals(id))).go();
+    await (delete(messages)..where((t) => t.id.equals(id))).go();
   }
 
   // SQLite rowid preserves insertion order without a schema migration. Only

@@ -5,6 +5,7 @@ import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -28,6 +29,7 @@ import javax.crypto.spec.SecretKeySpec
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import android.util.Base64
+import dev.privrelay.privrelay.R
 
 class NativeBridge(private val context:Context, messenger:BinaryMessenger, private val activity:Activity? = null) {
     private val channel = MethodChannel(messenger,"dev.privrelay/sms")
@@ -37,12 +39,13 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
     private var ownsLock=false
     private var pendingPermission:MethodChannel.Result?=null
     private var pendingAuthentication:MethodChannel.Result?=null
+    private var pendingSmsRole:MethodChannel.Result?=null
     init {
         if(activity!=null) foreground=this
         channel.setMethodCallHandler { call,result ->
             try {
                 when(call.method) {
-                    "status" -> result.success(mapOf("sms" to granted(Manifest.permission.RECEIVE_SMS),"notifications" to (Build.VERSION.SDK_INT<33 || granted(Manifest.permission.POST_NOTIFICATIONS)),"spool_count" to Spool(context).use{it.count()}))
+                    "status" -> result.success(mapOf("sms" to granted(Manifest.permission.RECEIVE_SMS),"read_sms" to granted(Manifest.permission.READ_SMS),"send_sms" to granted(Manifest.permission.SEND_SMS),"default_sms" to isDefaultSmsApp(),"notifications" to (Build.VERSION.SDK_INT<33 || granted(Manifest.permission.POST_NOTIFICATIONS)),"foreground_sync" to ForegroundSyncService.enabled(context),"spool_count" to Spool(context).use{it.count()}))
                     "authenticate" -> {
                         val owner=activity
                         val keyguard=context.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
@@ -54,6 +57,47 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
                         }
                     }
                     "requestSms" -> request(Manifest.permission.RECEIVE_SMS,result)
+                    "requestSmsRole" -> requestSmsRole(result)
+                    "requestReadSms" -> request(Manifest.permission.READ_SMS,result)
+                    "requestSendSms" -> request(Manifest.permission.SEND_SMS,result)
+                    "sendSms" -> {
+                        if (!granted(Manifest.permission.SEND_SMS)) throw SecurityException("SEND_SMS permission required")
+                        val args=call.arguments as Map<*,*>
+                        val address=(args["address"] as? String)?.trim().orEmpty()
+                        val body=args["body"] as? String ?: ""
+                        require(address.isNotEmpty() && address.length<=40 && body.isNotBlank() && body.length<=5000) { "Invalid SMS address or body" }
+                        val manager=context.getSystemService(android.telephony.SmsManager::class.java)
+                        val parts=manager.divideMessage(body)
+                        if(parts.size<=1) manager.sendTextMessage(address,null,body,null,null)
+                        else manager.sendMultipartTextMessage(address,null,parts,null,null)
+                        result.success(mapOf("parts" to parts.size))
+                    }
+                    "importHistory" -> {
+                        if (!granted(Manifest.permission.READ_SMS)) throw SecurityException("READ_SMS permission required")
+                        val limit = ((call.arguments as? Number)?.toInt() ?: 500).coerceIn(1, 5000)
+                        val rows = mutableListOf<Map<String, Any>>()
+                        val projection = arrayOf(android.provider.Telephony.Sms.ADDRESS,
+                            android.provider.Telephony.Sms.BODY, android.provider.Telephony.Sms.DATE, android.provider.Telephony.Sms.SUBSCRIPTION_ID)
+                        context.contentResolver.query(android.provider.Telephony.Sms.Inbox.CONTENT_URI, projection, null, null, "date ASC")?.use { cursor ->
+                            val addressCol=cursor.getColumnIndexOrThrow(android.provider.Telephony.Sms.ADDRESS)
+                            val bodyCol=cursor.getColumnIndexOrThrow(android.provider.Telephony.Sms.BODY)
+                            val dateCol=cursor.getColumnIndexOrThrow(android.provider.Telephony.Sms.DATE)
+                            val subCol=cursor.getColumnIndex(android.provider.Telephony.Sms.SUBSCRIPTION_ID)
+                            val start=maxOf(0, cursor.count-limit)
+                            if (start > 0) cursor.moveToPosition(start-1)
+                            while (rows.size < limit && cursor.moveToNext()) {
+                                val sub=if(subCol>=0 && !cursor.isNull(subCol)) cursor.getInt(subCol) else -1
+                                val slot=if(Build.VERSION.SDK_INT>=22 && sub>=0) android.telephony.SubscriptionManager.from(context).activeSubscriptionInfoList?.firstOrNull{it.subscriptionId==sub}?.simSlotIndex ?: -1 else -1
+                                val sender=cursor.getString(addressCol) ?: ""
+                                val body=cursor.getString(bodyCol) ?: ""
+                                val received=cursor.getLong(dateCol)
+                                val stableId=Spool.stableId(sender,body,received,sub)
+                                rows.add(mapOf("message_id" to stableId, "sender" to sender,
+                                    "body" to body, "received_at" to received, "subscription_id" to sub, "slot" to slot))
+                            }
+                        } ?: throw IllegalStateException("SMS provider unavailable")
+                        result.success(rows)
+                    }
                     "requestNotifications" -> if(Build.VERSION.SDK_INT>=33) request(Manifest.permission.POST_NOTIFICATIONS,result) else result.success(true)
                     "peek" -> result.success(Spool(context).use{it.peek()})
                     "ack" -> { Spool(context).use{it.ack((call.arguments as List<*>).map{v->v as String})}; result.success(null) }
@@ -65,7 +109,8 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
                     "decryptVault" -> { val a=call.arguments as Map<*,*>; result.success(decryptVault(a["ciphertext"] as String,a["passphrase"] as String,a["salt"] as String)) }
                     "initialize" -> {SyncWorker.periodic(context);result.success(null)}
                     "schedule" -> {SyncWorker.enqueue(context,(call.arguments as? Number)?.toLong() ?: 30,true);result.success(null)}
-                    "background" -> {context.getSharedPreferences("runtime",0).edit().putBoolean("background",call.arguments as Boolean).apply(); if(call.arguments==true) {SyncWorker.periodic(context);SyncWorker.enqueue(context)} else SyncWorker.cancel(context);result.success(null)}
+                    "background" -> {context.getSharedPreferences("runtime",0).edit().putBoolean("background",call.arguments as Boolean).apply(); if(call.arguments==true) {SyncWorker.periodic(context);SyncWorker.enqueue(context)} else {SyncWorker.cancel(context);ForegroundSyncService.setEnabled(context,false)};result.success(null)}
+                    "foregroundSync" -> {val enabled=call.arguments as Boolean;if(enabled&&!SyncWorker.enabled(context)) throw IllegalStateException("请先开启后台补发");ForegroundSyncService.setEnabled(context,enabled);result.success(null)}
                     "protectScreen" -> {
                         val enabled=call.arguments as Boolean
                         val owner=activity ?: throw IllegalStateException("Foreground activity required")
@@ -85,6 +130,49 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
         }
     }
     fun authenticationResult(result:Int) {pendingAuthentication?.success(result==Activity.RESULT_OK);pendingAuthentication=null}
+    fun smsRoleResult(result:Int) { pendingSmsRole?.success(isDefaultSmsApp()); pendingSmsRole=null }
+    fun refreshStatus(attempt:Int=0) {
+        channel.invokeMethod("statusChanged", null, object:MethodChannel.Result {
+            override fun success(value:Any?) {}
+            override fun error(code:String,message:String?,details:Any?) { if(attempt<10) Handler(Looper.getMainLooper()).postDelayed({refreshStatus(attempt+1)},500) }
+            override fun notImplemented() { if(attempt<10) Handler(Looper.getMainLooper()).postDelayed({refreshStatus(attempt+1)},500) }
+        })
+    }
+    fun handleIntent(intent:Intent?) {
+        if (intent?.action != Intent.ACTION_SENDTO) return
+        val uri=intent.data ?: return
+        val address=uri.schemeSpecificPart?.substringBefore('?')?.trim().orEmpty()
+        if (address.isEmpty()) return
+        val body=intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            ?: intent.getStringExtra("sms_body").orEmpty()
+        fun dispatch(attempt:Int) {
+            if (attempt>=10) return
+            Handler(Looper.getMainLooper()).postDelayed({
+                channel.invokeMethod("composeIntent", mapOf("address" to address,"body" to body), object:MethodChannel.Result {
+                    override fun success(value:Any?) {}
+                    override fun error(code:String,message:String?,details:Any?) { if(code=="channel-error") dispatch(attempt+1) }
+                    override fun notImplemented() { dispatch(attempt+1) }
+                })
+            },if(attempt==0) 700 else 500)
+        }
+        dispatch(0)
+    }
+    private fun isDefaultSmsApp():Boolean = if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.KITKAT) context.packageName==android.provider.Telephony.Sms.getDefaultSmsPackage(context) else false
+    private fun requestSmsRole(result:MethodChannel.Result) {
+        if(isDefaultSmsApp()) { result.success(true); return }
+        val owner=activity
+        if(owner==null || pendingSmsRole!=null) { result.success(false); return }
+        val requestIntent = if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.Q) {
+            val manager=context.getSystemService(RoleManager::class.java)
+            if(!manager.isRoleAvailable(RoleManager.ROLE_SMS)) { result.success(false); return }
+            manager.createRequestRoleIntent(RoleManager.ROLE_SMS)
+        } else {
+            Intent(android.provider.Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT)
+                .putExtra(android.provider.Telephony.Sms.Intents.EXTRA_PACKAGE_NAME,context.packageName)
+        }
+        pendingSmsRole=result
+        owner.startActivityForResult(requestIntent,723)
+    }
     fun permissionResult(grants:IntArray) {pendingPermission?.success(grants.isNotEmpty() && grants.all{it==PackageManager.PERMISSION_GRANTED});pendingPermission=null}
     private fun granted(permission:String)=context.checkSelfPermission(permission)==PackageManager.PERMISSION_GRANTED
     private fun request(permission:String,result:MethodChannel.Result) {
@@ -93,7 +181,7 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
         pendingPermission=result;activity.requestPermissions(arrayOf(permission),721)
     }
     private fun releaseLock(){if(ownsLock){ownsLock=false;consumer.set(false)}}
-    fun close(){pendingAuthentication?.success(false);pendingAuthentication=null;releaseLock();vaultCachePassphrase=null;vaultCacheSalt=null;vaultCacheKey=null;if(foreground===this)foreground=null;channel.setMethodCallHandler(null);pendingPermission?.success(false);pendingPermission=null}
+    fun close(){pendingAuthentication?.success(false);pendingAuthentication=null;pendingSmsRole?.success(false);pendingSmsRole=null;releaseLock();vaultCachePassphrase=null;vaultCacheSalt=null;vaultCacheKey=null;if(foreground===this)foreground=null;channel.setMethodCallHandler(null);pendingPermission?.success(false);pendingPermission=null}
     private fun keyStore()=KeyStore.getInstance("AndroidKeyStore").apply{load(null)}
     @Synchronized private fun vaultKey(passphrase:String,salt:String):SecretKeySpec {
         require(passphrase.length >= 12 && passphrase.all { it.code in 33..126 }) { "Vault passphrase must contain at least 12 visible ASCII characters" }
@@ -140,11 +228,11 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
     private fun notifyGeneric(id:String) {
         if(Build.VERSION.SDK_INT>=33 && !granted(Manifest.permission.POST_NOTIFICATIONS))return
         val nm=context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(NotificationChannel("messages","新短信",NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel("messages",context.getString(R.string.sms_notification_channel),NotificationManager.IMPORTANCE_DEFAULT))
         val launch=context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return
         val pi=PendingIntent.getActivity(context,0,launch,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         nm.notify(id.hashCode(),NotificationCompat.Builder(context,"messages").setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle("PrivRelay").setContentText("收到新短信，点击在应用中查看").setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentTitle(context.getString(R.string.sms_notification_title)).setContentText(context.getString(R.string.sms_notification_body)).setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setContentIntent(pi).setOnlyAlertOnce(true).setAutoCancel(true).build())
     }
     companion object {

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull, isNotNull;
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,7 +17,7 @@ import 'package:privrelay/data/repository.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   testWidgets(
-    'Android E2EE: native spool, encrypted retry, synthetic quarantine UI, correction, revoke',
+    'Android E2EE: native spool, encrypted retry, synthetic quarantine UI, correction, and last-admin protection',
     (tester) async {
       const code = String.fromEnvironment('PAIRING_CODE');
       const passphrase = String.fromEnvironment('VAULT_PASSPHRASE');
@@ -37,6 +38,20 @@ void main() {
       await r.finishOnboarding();
       await r.setVaultPassphrase(passphrase);
       await r.pair('http://127.0.0.1:8787', code, allowHttp: true);
+      if (const bool.fromEnvironment('DEVICE_SMS_HISTORY_SMOKE')) {
+        // Run only on a dedicated test phone after granting READ_SMS. Inspect
+        // field shapes and the 5,000 row cap without printing message content.
+        await Future<void>.delayed(const Duration(seconds: 20));
+        expect((await r.platform.status())['read_sms'], isTrue);
+        final history = await r.platform.importHistory(5000);
+        expect(history.length, lessThanOrEqualTo(5000));
+        for (final row in history) {
+          expect(row['message_id'], isA<String>());
+          expect(row['sender'], isA<String>());
+          expect(row['body'], isA<String>());
+          expect(row['received_at'], isA<int>());
+        }
+      }
       final stamp = DateTime.now().millisecondsSinceEpoch;
       const channel = MethodChannel('dev.privrelay/sms');
       final fixture = {
@@ -87,7 +102,7 @@ void main() {
       final envelopePage = await r.http.get(
         '$server/api/v2/encrypted-messages',
         options: r.auth,
-        queryParameters: {'cursor': 0, 'limit': 200},
+        queryParameters: {'cursor': 0, 'limit': 50},
       );
       final envelopes = (envelopePage.data as Map)['messages'] as List;
       for (final expected in [original, otp]) {
@@ -181,9 +196,14 @@ void main() {
         (await r.db.page(search: '测试银行')).where((m) => m.id == id2).length,
         1,
       );
-      await r.revoke(r.deviceId);
-      await r.sync();
-      expect(r.rePair, isTrue);
+      // This isolated server has exactly one administrator. The API must not
+      // allow that final admin to revoke itself; the client can still unpair.
+      try {
+        await r.revoke(r.deviceId);
+        fail('The last active admin must not be revocable');
+      } on DioException catch (error) {
+        expect(error.response?.statusCode, 409);
+      }
       expect(
         await r.db.find(id),
         isNotNull,

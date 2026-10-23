@@ -125,6 +125,17 @@ func TestE2EECiphertextCASAndRestart(t *testing.T) {
 	}
 }
 
+func TestE2EESupportsMmsSizedCiphertext(t *testing.T) {
+	s, token := enableE2EEFixture(t)
+	message := sealedFixture()
+	message.ID = "encrypted-mms-attachment-0001"
+	message.Ciphertext = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 2*1024*1024))
+	w := call(t, s, "POST", "/api/v2/encrypted-messages/sync", token, encryptedBatch{Messages: []EncryptedMessage{message}})
+	if w.Code != 200 {
+		t.Fatalf("MMS-sized encrypted message rejected: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestE2EEMigrationNeverPurgesUnmigratedOriginals(t *testing.T) {
 	s, token := enableE2EEFixture(t)
 	device := "encrypted-device-0001"

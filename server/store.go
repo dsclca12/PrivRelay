@@ -4,6 +4,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,7 @@ type Message struct {
 type Device struct {
 	ID        string `json:"device_id"`
 	Name      string `json:"name"`
+	Role      string `json:"role,omitempty"`
 	PublicKey string `json:"public_key"`
 	E2EE      bool   `json:"e2ee,omitempty"`
 	TokenHash string `json:"token_hash,omitempty"`
@@ -53,16 +55,19 @@ type Rules struct {
 	Blacklist []string `json:"blacklist"`
 }
 type Feedback struct {
-	ID         string `json:"operation_id"`
-	MessageID  string `json:"message_id"`
-	Category   string `json:"corrected_category"`
-	Status     string `json:"review_status"`
-	Predicted  string `json:"predicted_category,omitempty"`
-	Model      string `json:"model_version,omitempty"`
-	ReviewedBy string `json:"reviewed_by,omitempty"`
-	ReviewedAt int64  `json:"reviewed_at,omitempty"`
+	ID          string `json:"operation_id"`
+	MessageID   string `json:"message_id"`
+	Category    string `json:"corrected_category"`
+	Status      string `json:"review_status"`
+	Predicted   string `json:"predicted_category,omitempty"`
+	Model       string `json:"model_version,omitempty"`
+	ReviewedBy  string `json:"reviewed_by,omitempty"`
+	ReviewedAt  int64  `json:"reviewed_at,omitempty"`
+	WithdrawnAt int64  `json:"withdrawn_at,omitempty"`
+	WithdrawnBy string `json:"withdrawn_by,omitempty"`
 }
 type ExportAudit struct {
+	ExportID    string `json:"export_id"`
 	Device      string `json:"device_id"`
 	At          int64  `json:"at"`
 	Purpose     string `json:"purpose"`
@@ -77,6 +82,7 @@ type MessageOperation struct {
 // EncryptedMessage is an opaque client-encrypted record. The server keeps
 // only routing metadata and the authenticated ciphertext envelope.
 type EncryptedMessage struct {
+	Deleted           bool   `json:"deleted,omitempty"`
 	OperationID       string `json:"operation_id,omitempty"`
 	OperationKind     string `json:"operation_kind,omitempty"`
 	OperationReplayed bool   `json:"operation_replayed,omitempty"`
@@ -104,6 +110,9 @@ type Store struct {
 	Revision            int64                       `json:"revision"`
 	path                string
 	key                 []byte
+	db                  *sql.DB
+	pgLock              *sql.Conn
+	tenantID            string
 }
 
 func (s *Store) messageID(id string) string {
@@ -208,6 +217,12 @@ func (s *Store) save() error {
 		return err
 	}
 	raw := gcm.Seal(nonce, nonce, plain, []byte("PrivRelay-v1"))
+	if s.db != nil {
+		_, err = s.db.Exec(`INSERT INTO privrelay_tenant_state (tenant_id, payload, updated_at)
+			VALUES ($1, $2, now()) ON CONFLICT (tenant_id) DO UPDATE
+			SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`, s.tenantID, raw)
+		return err
+	}
 	f, err := os.OpenFile(s.path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {
 		return err

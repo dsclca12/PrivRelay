@@ -150,6 +150,7 @@ func TestBrowserSessionCSRFAndRevocation(t *testing.T) {
 	if w := browserCall(s, "DELETE", "/api/v1/session", "http://relay.test", "", cookie, nil); w.Code != 200 || w.Result().Cookies()[0].MaxAge != -1 {
 		t.Fatal("logout")
 	}
+	s.store.Devices["backup-admin-0001"] = Device{ID: "backup-admin-0001", Role: "admin", Active: true, Expires: time.Now().Add(time.Hour).Unix()}
 	call(t, s, "DELETE", "/api/v1/devices/test-device-0001", token, nil)
 	if w := browserCall(s, "GET", "/api/v1/messages", "", "", cookie, nil); w.Code != 401 {
 		t.Fatal("revoked cookie accepted")

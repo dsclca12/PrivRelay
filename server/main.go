@@ -44,6 +44,8 @@ type Server struct {
 	retryCursor               string
 	failures                  map[string]int
 	webDir                    string
+	retentionDays             int
+	pairingRole               string
 }
 
 func randomToken() string {
@@ -54,9 +56,64 @@ func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 func hash(raw string) string { h := sha256.Sum256([]byte(raw)); return hex.EncodeToString(h[:]) }
+func envInt(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return -1
+	}
+	return parsed
+}
 func newServer(store *Store, classifier string) *Server {
 	return &Server{store: store, code: randomToken(), codeExpires: time.Now().Add(10 * time.Minute), classifier: classifier,
-		client: &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}, peers: map[*websocket.Conn]string{}, peerSignals: map[*websocket.Conn]chan struct{}{}, failures: map[string]int{}}
+		pairingRole: "admin",
+		client:      &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}, peers: map[*websocket.Conn]string{}, peerSignals: map[*websocket.Conn]chan struct{}{}, failures: map[string]int{}}
+}
+
+// purgeExpiredEncryptedMessages retains a revisioned tombstone so every E2EE
+// client removes the same record on its next cursor sync. It never purges the
+// legacy plaintext store: that requires a separate migration/deletion contract.
+func (s *Server) purgeExpiredEncryptedMessages(now time.Time) (int, error) {
+	if s.retentionDays <= 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.store.E2EEEnabled {
+		return 0, nil
+	}
+	cutoff := now.Add(-time.Duration(s.retentionDays) * 24 * time.Hour).UnixMilli()
+	before := s.snapshot()
+	removed := 0
+	for id, message := range s.store.EncryptedMessages {
+		if message.Deleted || message.Received >= cutoff {
+			continue
+		}
+		message.Ciphertext = ""
+		message.Device = ""
+		message.Deleted = true
+		s.store.Revision++
+		message.Revision = s.store.Revision
+		s.store.EncryptedMessages[id] = message
+		for operationID, operation := range s.store.EncryptedOperations {
+			if operation.MessageID == id {
+				delete(s.store.EncryptedOperations, operationID)
+			}
+		}
+		removed++
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	if err := s.store.save(); err != nil {
+		s.rollback(before)
+		return 0, err
+	}
+	s.broadcast()
+	return removed, nil
 }
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -106,6 +163,44 @@ func (s *Server) auth(r *http.Request) (Device, bool) {
 	return Device{}, false
 }
 
+func (s *Server) updateDeviceRole(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/devices/"), "/role")
+	target, ok := s.store.Devices[id]
+	if !ok {
+		writeJSON(w, 404, map[string]string{"error": "device_not_found"})
+		return
+	}
+	var req struct {
+		Role string `json:"role"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.Role != "admin" && req.Role != "editor" && req.Role != "viewer" {
+		writeJSON(w, 422, map[string]string{"error": "role_contract"})
+		return
+	}
+	if target.Active && deviceRole(target) == "admin" && req.Role != "admin" {
+		admins := 0
+		for _, device := range s.store.Devices {
+			if device.Active && device.Expires > time.Now().Unix() && deviceRole(device) == "admin" {
+				admins++
+			}
+		}
+		if admins <= 1 {
+			writeJSON(w, 409, map[string]string{"error": "last_admin"})
+			return
+		}
+	}
+	before := s.snapshot()
+	target.Role = req.Role
+	s.store.Devices[id] = target
+	if s.commit(w, before) {
+		writeJSON(w, 200, target)
+		s.broadcast()
+	}
+}
+
 // Every acknowledged mutation is durable. Roll back memory when disk commit fails.
 func (s *Server) commit(w http.ResponseWriter, before []byte) bool {
 	if err := s.store.save(); err != nil {
@@ -123,6 +218,9 @@ func (s *Server) rollback(raw []byte) {
 	}
 	previous.path = s.store.path
 	previous.key = s.store.key
+	previous.db = s.store.db
+	previous.pgLock = s.store.pgLock
+	previous.tenantID = s.store.tenantID
 	*s.store = previous
 }
 func (s *Server) handler() http.Handler {
@@ -151,6 +249,10 @@ func (s *Server) handler() http.Handler {
 			return
 		}
 		path := r.URL.Path
+		if !authorizedRole(d, path, r.Method) {
+			writeJSON(w, 403, map[string]string{"error": "insufficient_role"})
+			return
+		}
 		if (d.E2EE || s.store.E2EEEnabled) && (path == "/api/v1/messages/sync" || path == "/api/v1/messages" ||
 			path == "/api/v1/messages/search" || path == "/api/v1/filter/quarantine" ||
 			strings.HasPrefix(path, "/api/v1/messages/") || strings.HasPrefix(path, "/api/v1/feedback")) {
@@ -191,13 +293,30 @@ func (s *Server) handler() http.Handler {
 			http.SetCookie(w, sessionCookie(r, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), int(time.Until(time.Unix(d.Expires, 0)).Seconds())))
 			writeJSON(w, 200, d.ID)
 		case path == "/api/v1/session" && r.Method == "GET":
-			writeJSON(w, 200, map[string]string{"device_id": d.ID, "name": d.Name})
+			writeJSON(w, 200, map[string]string{"device_id": d.ID, "name": d.Name, "role": deviceRole(d)})
 		case path == "/api/v1/session" && r.Method == "DELETE":
 			http.SetCookie(w, sessionCookie(r, "", -1))
 			writeJSON(w, 200, map[string]bool{"logged_out": true})
 		case path == "/api/v1/pairing-codes" && r.Method == "POST":
+			role := "editor"
+			if r.ContentLength > 0 {
+				var req struct {
+					Role string `json:"role"`
+				}
+				if !readJSON(w, r, &req) {
+					return
+				}
+				if req.Role != "" {
+					role = req.Role
+				}
+			}
+			if role != "admin" && role != "editor" && role != "viewer" {
+				writeJSON(w, 422, map[string]string{"error": "role_contract"})
+				return
+			}
 			s.code = randomToken()
 			s.codeExpires = time.Now().Add(10 * time.Minute)
+			s.pairingRole = role
 			s.failures = map[string]int{}
 			writeJSON(w, 201, map[string]any{"pairing_code": s.code, "expires_at": s.codeExpires.Unix()})
 		case path == "/api/v1/pairing-codes" && r.Method == "GET":
@@ -218,6 +337,8 @@ func (s *Server) handler() http.Handler {
 			s.listFeedback(w, r)
 		case strings.HasPrefix(path, "/api/v1/feedback/") && r.Method == "PUT":
 			s.reviewFeedback(w, r, d)
+		case strings.HasSuffix(path, "/withdraw") && strings.HasPrefix(path, "/api/v1/feedback/") && r.Method == "POST":
+			s.withdrawFeedback(w, r, d)
 		case strings.HasPrefix(path, "/api/v1/messages/") && r.Method == "POST":
 			s.operation(w, r)
 		case path == "/api/v1/ai/settings" && r.Method == "GET":
@@ -234,6 +355,7 @@ func (s *Server) handler() http.Handler {
 			devices := []Device{}
 			for _, device := range s.store.Devices {
 				device.TokenHash = ""
+				device.Role = deviceRole(device)
 				devices = append(devices, device)
 			}
 			sort.Slice(devices, func(i, j int) bool { return devices[i].ID < devices[j].ID })
@@ -244,6 +366,18 @@ func (s *Server) handler() http.Handler {
 			if !ok {
 				http.NotFound(w, r)
 				return
+			}
+			if device.Active && deviceRole(device) == "admin" {
+				admins := 0
+				for _, candidate := range s.store.Devices {
+					if candidate.Active && candidate.Expires > time.Now().Unix() && deviceRole(candidate) == "admin" {
+						admins++
+					}
+				}
+				if admins <= 1 {
+					writeJSON(w, 409, map[string]string{"error": "last_admin"})
+					return
+				}
 			}
 			before := s.snapshot()
 			device.Active = false
@@ -259,6 +393,8 @@ func (s *Server) handler() http.Handler {
 				}
 				writeJSON(w, 200, map[string]bool{"revoked": true})
 			}
+		case strings.HasPrefix(path, "/api/v1/devices/") && strings.HasSuffix(path, "/role") && r.Method == "PUT":
+			s.updateDeviceRole(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -341,9 +477,14 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	if req.E2EE {
 		s.store.E2EEEnabled = true
 	}
-	s.store.Devices[req.ID] = Device{ID: req.ID, Name: req.Name, PublicKey: req.Key, E2EE: req.E2EE, TokenHash: hash(token), Active: true, Expires: time.Now().Add(90 * 24 * time.Hour).Unix()}
+	role := s.pairingRole
+	if role == "" {
+		role = "editor"
+	}
+	s.store.Devices[req.ID] = Device{ID: req.ID, Name: req.Name, Role: role, PublicKey: req.Key, E2EE: req.E2EE, TokenHash: hash(token), Active: true, Expires: time.Now().Add(90 * 24 * time.Hour).Unix()}
 	if s.commit(w, before) {
 		s.code = ""
+		s.pairingRole = "editor"
 		writeJSON(w, 201, map[string]string{"token": token, "device_id": req.ID})
 	}
 }
@@ -531,7 +672,11 @@ func (s *Server) operation(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 409, map[string]string{"error": "operation_conflict"})
 			return
 		}
-		writeJSON(w, 200, map[string]string{"status": old.Status})
+		status := old.Status
+		if old.WithdrawnAt != 0 {
+			status = "withdrawn"
+		}
+		writeJSON(w, 200, map[string]string{"status": status})
 		return
 	}
 	before := s.snapshot()
@@ -668,10 +813,14 @@ func (s *Server) broadcast() {
 
 func main() {
 	addr := flag.String("listen", "127.0.0.1:8787", "HTTP bind (use HTTPS reverse proxy)")
-	data := flag.String("data", "data/privrelay.enc", "encrypted single-owner MVP store")
+	data := flag.String("data", "data/privrelay.enc", "encrypted file store path (used when PostgreSQL is not configured)")
+	databaseURL := flag.String("database-url", os.Getenv("PRIVRELAY_DATABASE_URL"), "optional PostgreSQL URL for tenant-isolated encrypted state")
+	tenantID := flag.String("tenant-id", os.Getenv("PRIVRELAY_TENANT_ID"), "required tenant key when PostgreSQL is enabled")
+	migrateFrom := flag.String("migrate-from", "", "copy an existing encrypted file store into a new PostgreSQL tenant; source is preserved")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate PEM; requires -tls-key")
 	tlsKey := flag.String("tls-key", "", "TLS private key PEM; requires -tls-cert")
 	classifier := flag.String("classifier", os.Getenv("CLASSIFIER_URL"), "PrivateSMS classifier base URL")
+	retentionDays := flag.Int("retention-days", envInt("PRIVRELAY_RETENTION_DAYS", 0), "optional E2EE server retention in days; 0 disables deletion")
 	webDir := flag.String("web", "", "optional built frontend directory (disabled by default)")
 	maintenance := flag.String("maintenance", "", "offline backup, restore or rotate-key")
 	output := flag.String("output", "", "new private destination directory for maintenance")
@@ -680,27 +829,63 @@ func main() {
 		log.Fatal("TLS requires both -tls-cert and -tls-key")
 	}
 	if *maintenance != "" {
+		if *databaseURL != "" {
+			log.Fatal("PostgreSQL maintenance is not supported by the file-store maintenance command")
+		}
 		if err := maintainStore(*maintenance, *data, *output); err != nil {
 			log.Fatal("maintenance failed: ", err)
 		}
 		fmt.Println("Maintenance completed; original source preserved.")
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(*data), 0700); err != nil {
-		log.Fatal("cannot create store directory")
+	var store *Store
+	var err error
+	var storeLock interface{ Close() error }
+	if *databaseURL != "" {
+		if *migrateFrom != "" {
+			fileLock, lockErr := lockStore(*migrateFrom)
+			if lockErr != nil {
+				log.Fatal("source file store is already in use or cannot be locked")
+			}
+			defer fileLock.Close()
+			var source *Store
+			source, err = openStore(*migrateFrom)
+			if err == nil {
+				store, err = migrateFileStoreToPostgres(context.Background(), source, *databaseURL, *tenantID)
+			}
+		} else {
+			store, err = openPostgresStore(context.Background(), *databaseURL, *tenantID)
+		}
+	} else {
+		if *migrateFrom != "" {
+			log.Fatal("-migrate-from requires -database-url")
+		}
+		if err = os.MkdirAll(filepath.Dir(*data), 0700); err == nil {
+			storeLock, err = lockStore(*data)
+		}
+		if err == nil {
+			store, err = openStore(*data)
+		}
 	}
-	storeLock, err := lockStore(*data)
 	if err != nil {
-		log.Fatal("data store is already in use or cannot be locked")
+		log.Fatal("cannot open protected data store; check PostgreSQL configuration or encrypted storage key")
 	}
-	defer storeLock.Close()
-	store, err := openStore(*data)
-	if err != nil {
-		log.Fatal("cannot open protected data store")
+	if storeLock != nil {
+		defer storeLock.Close()
 	}
+	defer store.close()
 	s := newServer(store, *classifier)
+	if *retentionDays < 0 || *retentionDays > 36500 {
+		log.Fatal("retention-days must be between 0 and 36500")
+	}
+	s.retentionDays = *retentionDays
 	s.webDir = *webDir
 	s.classifierKey = os.Getenv("CLASSIFIER_API_KEY")
+	if removed, err := s.purgeExpiredEncryptedMessages(time.Now()); err != nil {
+		log.Printf("retention cleanup failed: %v", err)
+	} else if removed > 0 {
+		log.Printf("retention cleanup removed %d expired encrypted messages", removed)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	backgroundDone := make(chan struct{})
@@ -714,6 +899,11 @@ func main() {
 				return
 			case <-ticker.C:
 				s.refreshClassifications()
+				if deleted, err := s.purgeExpiredEncryptedMessages(time.Now()); err != nil {
+					log.Printf("retention cleanup failed: %v", err)
+				} else if deleted > 0 {
+					log.Printf("retention cleanup removed %d expired encrypted messages", deleted)
+				}
 			}
 		}
 	}()

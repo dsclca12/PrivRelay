@@ -2,7 +2,7 @@
 
 [项目首页](../README.md) · [文档索引](README.md) · [后端 API](BACKEND_API.md)
 
-本指南对应单用户、单进程 Go 服务。当前使用 AES-GCM 加密文件快照，不需要 PostgreSQL；不能让多个进程同时写入同一数据文件。Web 控制台已实现，可通过根目录 `./tools/start.ps1` 一起构建启动，或使用 Docker Compose 同源托管。
+本指南适用于 Go 服务的文件快照和 PostgreSQL 加密租户快照后端。文件后端不能让多个进程同时写入同一数据文件；PostgreSQL 每租户仅允许运行一个活跃进程。服务支持设备级 admin/editor/viewer 权限，但不提供独立用户/组账户或同租户水平多实例。Web 控制台可通过根目录 `./tools/start.ps1` 一起构建启动，或使用 Docker Compose 同源托管。
 
 ## 本机启动
 
@@ -20,6 +20,21 @@ go run . -listen 127.0.0.1:8787 -data data/privrelay.enc
 | `-listen` | `127.0.0.1:8787` | HTTP 监听地址；公网访问通过 HTTPS 反向代理 |
 | `-data` | `data/privrelay.enc` | AES-GCM 密文快照路径；默认密钥为同路径追加 `.key`，也可用 `PRIVRELAY_STORAGE_KEY` 从外部密钥管理器注入 32 字节 Base64 密钥 |
 | `-classifier` | `CLASSIFIER_URL` 环境变量，未设置时为空 | 分类器基础地址，不包含 `/api/v1/classify` |
+| `-retention-days` | `PRIVRELAY_RETENTION_DAYS` 环境变量，默认 `0` | E2EE 密文服务端保留天数；`0` 关闭。启用后检查 E2EE 库内现有及新收到的密文，过期时写入同步删除墓碑；设备下次同步会删除本地副本。旧明文迁移数据、备份及离线设备在重连前不会被物理清除 |
+| `-database-url` | `PRIVRELAY_DATABASE_URL` 环境变量，默认空 | 配置 PostgreSQL 后以单租户加密状态行作为持久层；空值时继续使用 `-data` 加密快照 |
+| `-tenant-id` | `PRIVRELAY_TENANT_ID` 环境变量 | PostgreSQL 必填；每个服务进程固定到一个租户，租户状态使用独立 HKDF 派生密钥，advisory lock 阻止同一租户多进程同时写入 |
+| `-migrate-from` | 无 | 启动时将现有加密快照复制到一个空 PostgreSQL 租户行；源快照和密钥保留，不覆盖已存在租户 |
+
+PostgreSQL 使用外部托管或自行部署的数据库，并设置强随机 `PRIVRELAY_STORAGE_KEY`（32 字节 Base64）。迁移时该 key 需与源加密快照的 key 相同；系统会按 tenant ID 用 HKDF 派生数据库密钥。单租户迁移示例：
+
+```sh
+PRIVRELAY_DATABASE_URL='postgres://privrelay:...@db.example/privrelay?sslmode=verify-full' \
+PRIVRELAY_TENANT_ID='household-a' \
+PRIVRELAY_STORAGE_KEY='<32-byte-base64-master-key>' \
+go run . -migrate-from data/privrelay.enc
+```
+
+后续使用相同环境配置启动即可，无需 `-migrate-from`。迁移不删除旧文件。 PostgreSQL 中存的是经过 AES-GCM 加密的完整 tenant snapshot，不是逐实体关系表；HTTP 数据模型仍维持单租户视图。每个租户需独立服务进程，不能对同一租户启用水平多实例；数据库级 advisory lock 会拒绝第二个活跃实例。使用外部数据库时仍需安排 PostgreSQL 自身备份，并在恢复时一并取得密钥。
 | `-web` | 空，关闭 | 可选的已有前端构建目录；无 SPA history 回退 |
 | `-tls-cert` / `-tls-key` | 空 | 同时设置时由 Go 直接提供 TLS 1.2+；也可由 Caddy 等可信反向代理终止 TLS |
 
@@ -46,7 +61,7 @@ docker compose up --build -d
 docker compose logs server
 ```
 
-`compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`；也可通过 `PRIVRELAY_STORAGE_KEY` 注入外部密钥管理器提供的 32 字节 Base64 密钥，使主密钥与数据卷分离。使用外部密钥时，备份/恢复仍须把密文与对应密钥一起保管。`classifier-feedback` 为上游反馈库提供独立持久化位置（可能含明文样本，需保护卷访问）。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY`；可使用本机环境变量或被忽略的根目录 `.env` 配置。
+`compose.yaml` 默认只映射宿主机 `127.0.0.1:8787`。命名卷 `relay-data` 保存 `/data/privrelay.enc` 和 `/data/privrelay.enc.key`；也可通过 `PRIVRELAY_STORAGE_KEY` 注入外部密钥管理器提供的 32 字节 Base64 密钥，使主密钥与数据卷分离。使用外部密钥时，备份/恢复仍须把密文与对应密钥一起保管。`classifier-feedback` 为上游反馈库提供独立持久化位置（可能含明文样本，需保护卷访问）。Compose 会注入 `CLASSIFIER_URL`、`CLASSIFIER_API_KEY` 和 `PRIVRELAY_RETENTION_DAYS`；可使用本机环境变量或被忽略的根目录 `.env` 配置。保留策略默认关闭；设置正整数后，服务每分钟检查一次 E2EE 密文记录，到期记录清除密文并产生持久化修订墓碑，供在线设备同步删除。该设置不自动清除服务器旧明文记录、备份或尚未重新连接设备的本地副本。
 
 若使用 `PRIVRELAY_STORAGE_KEY`，轮换密钥命令会生成带新 `.key` 文件的独立输出目录。恢复该轮换备份时，先移除旧的 `PRIVRELAY_STORAGE_KEY` 注入，或将新密钥更新到外部密钥管理器后再启动服务；旧密钥无法解密轮换后的快照。
 

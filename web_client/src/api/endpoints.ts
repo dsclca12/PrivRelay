@@ -18,15 +18,25 @@ export function getHealth(): Promise<Health> {
 export function listMessages(cursor: number, limit = 50): Promise<MessagesPage> {
   return (async () => {
     const session = vaultGeneration()
-    const page = await apiFetch<Omit<MessagesPage, 'messages'> & { messages: EncryptedMessage[] }>(`/api/v2/encrypted-messages?cursor=${cursor}&limit=${limit}`)
+    const messages: Message[] = []
+    let next = cursor
+    let hasMore = true
+    while (messages.length < limit && hasMore) {
+      const page = await apiFetch<Omit<MessagesPage, 'messages'> & { messages: EncryptedMessage[] }>(`/api/v2/encrypted-messages?cursor=${next}&limit=${Math.min(50, limit - messages.length)}`)
+      if (session !== vaultGeneration()) throw new Error('vault_session_changed')
+      for (const row of page.messages) {
+        if (row.deleted) continue
+        const message = JSON.parse(await decryptVault(row.ciphertext)) as Message
+        if (message.message_id !== row.message_id || message.received_at !== row.received_at) throw new Error('encrypted_message_identity_mismatch')
+        messages.push({ ...message, revision: row.revision })
+      }
+      if (page.has_more && page.cursor <= next) throw new Error('invalid_message_cursor')
+      next = page.cursor
+      hasMore = page.has_more
+      if (page.messages.length === 0) break
+    }
     if (session !== vaultGeneration()) throw new Error('vault_session_changed')
-    const messages = await Promise.all(page.messages.map(async row => {
-      const message = JSON.parse(await decryptVault(row.ciphertext)) as Message
-      if (message.message_id !== row.message_id || message.received_at !== row.received_at) throw new Error('encrypted_message_identity_mismatch')
-      return { ...message, revision: row.revision }
-    }))
-    if (session !== vaultGeneration()) throw new Error('vault_session_changed')
-    return { ...page, messages }
+    return { messages, cursor: next, has_more: hasMore }
   })()
 }
 
@@ -127,7 +137,7 @@ export function registerDevice(request: RegisterRequest): Promise<RegisterRespon
   })
 }
 
-export interface BrowserSession { device_id: string; name: string }
+export interface BrowserSession { device_id: string; name: string; role: 'admin' | 'editor' | 'viewer' }
 export function getSession(): Promise<BrowserSession> {
   return apiFetch<BrowserSession>('/api/v1/session')
 }
@@ -137,8 +147,11 @@ export function createSession(): Promise<string> {
 export function deleteSession(): Promise<{ logged_out: boolean }> {
   return apiFetch('/api/v1/session', { method: 'DELETE' })
 }
-export function createPairingCode(): Promise<{ pairing_code: string; expires_at: number }> {
-  return apiFetch('/api/v1/pairing-codes', { method: 'POST' })
+export function createPairingCode(role: 'admin' | 'editor' | 'viewer' = 'editor'): Promise<{ pairing_code: string; expires_at: number }> {
+  return apiFetch('/api/v1/pairing-codes', { method: 'POST', body: { role } })
+}
+export function setDeviceRole(id: string, role: 'admin' | 'editor' | 'viewer'): Promise<Device> {
+  return apiFetch(`/api/v1/devices/${encodeURIComponent(id)}/role`, { method: 'PUT', body: { role } })
 }
 export function getPairingStatus(): Promise<{ active: boolean; expires_at: number }> {
   return apiFetch('/api/v1/pairing-codes')
@@ -167,7 +180,7 @@ export function getStatus(): Promise<ServerStatus> {
   return apiFetch('/api/v1/status')
 }
 
-export type ReviewStatus = 'pending_review' | 'approved' | 'rejected'
+export type ReviewStatus = 'pending_review' | 'approved' | 'rejected' | 'withdrawn'
 export interface Feedback {
   operation_id: string
   message_id: string
@@ -177,6 +190,8 @@ export interface Feedback {
   review_status: ReviewStatus
   reviewed_by?: string
   reviewed_at?: number
+  withdrawn_at?: number
+  withdrawn_by?: string
 }
 export interface FeedbackPage {
   feedback: Feedback[]
@@ -191,6 +206,9 @@ export function reviewFeedback(id: string, status: 'approved' | 'rejected'): Pro
   return apiFetch(`/api/v1/feedback/${encodeURIComponent(id)}`, {
     method: 'PUT', body: { review_status: status },
   })
+}
+export function withdrawFeedback(id: string): Promise<{ status: 'withdrawn' }> {
+  return apiFetch(`/api/v1/feedback/${encodeURIComponent(id)}/withdraw`, { method: 'POST' })
 }
 export function getMessage(id: string): Promise<Message> {
   return allMessages().then(messages => {

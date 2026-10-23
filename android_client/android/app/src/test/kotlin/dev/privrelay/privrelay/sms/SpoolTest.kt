@@ -18,7 +18,7 @@ class SpoolTest {
         assertNotEquals(a,Spool.fingerprint("sender","body",123,2))
         assertNotEquals(a,Spool.fingerprint("sender","other",123,1))
     }
-    @Test fun idIsUuidV7(){val id=UUID.fromString(Spool.uuidV7());assertEquals(7,id.version());assertEquals(2,id.variant())}
+    @Test fun idIsUuidV7(){val id=UUID.fromString(Spool.stableId("sender","body",123,1));assertEquals(7,id.version());assertEquals(2,id.variant())}
     @Test fun spoolDurableAndDeduplicatedAfterAck(){
         val ctx=RuntimeEnvironment.getApplication() as Context;ctx.deleteDatabase("sms_spool.db")
         fun open()=Spool(ctx,{it.toByteArray()},{String(it)})

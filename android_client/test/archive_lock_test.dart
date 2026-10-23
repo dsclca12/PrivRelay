@@ -59,6 +59,7 @@ void main() {
       final db = AppDatabase(NativeDatabase.memory());
       final auth = AuthPlatform();
       final r = LockedRepository(db, auth)..appLockEnabled = true;
+      r.languagePreference = 'zh';
       await db.ingest([
         const SmsMessage(
           id: 'secret',

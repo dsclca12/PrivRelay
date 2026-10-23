@@ -10,6 +10,7 @@ import android.util.Base64
 import org.json.JSONObject
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.nio.ByteBuffer
 import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -44,16 +45,20 @@ class Spool(context: Context, private val encode:(String)->ByteArray=Crypto::enc
         db.execSQL("CREATE TABLE seen (dedup TEXT PRIMARY KEY, id TEXT NOT NULL)")
     }
     override fun onUpgrade(db: SQLiteDatabase, old: Int, new: Int) { error("Migration required") }
-    @Synchronized fun insert(sender:String, body:String, received:Long, sub:Int, slot:Int, operator:String = ""):String {
-        val dedup = fingerprint(sender,body,received,sub)
+    @Synchronized fun insert(sender:String, body:String, received:Long, sub:Int, slot:Int, operator:String = "", contentKind:String = "sms", attachments:org.json.JSONArray? = null, attachmentsTruncated:Boolean = false, identityKey:String? = null):String {
+        val identityBody = identityKey ?: body
+        val dedup = fingerprint(sender,identityBody,received,sub)
         val db = writableDatabase
         db.beginTransaction()
         try {
             db.rawQuery("SELECT id FROM seen WHERE dedup=?",arrayOf(dedup)).use { if(it.moveToFirst()) { db.setTransactionSuccessful(); return it.getString(0) } }
-            val id = uuidV7()
+            val id = stableId(sender,identityBody,received,sub)
             val data = JSONObject().put("message_id",id).put("sender",sender).put("body",body)
                 .put("received_at",received).put("subscription_id",sub).put("slot",slot)
                 .put("operator",operator).put("collected_at",System.currentTimeMillis())
+            if (contentKind != "sms") data.put("content_kind",contentKind)
+            if (attachments != null) data.put("attachments",attachments)
+            if (attachmentsTruncated) data.put("attachments_truncated",true)
             db.insertOrThrow("spool",null,ContentValues().apply {put("id",id);put("dedup",dedup);put("payload",encode(data.toString()))})
             db.insertOrThrow("seen",null,ContentValues().apply {put("dedup",dedup);put("id",id)})
             db.setTransactionSuccessful()
@@ -75,9 +80,19 @@ class Spool(context: Context, private val encode:(String)->ByteArray=Crypto::enc
     companion object {
         fun fingerprint(sender:String,body:String,received:Long,sub:Int):String = Base64.encodeToString(
             MessageDigest.getInstance("SHA-256").digest(JSONObject().put("sender",sender).put("body",body).put("at",received).put("sub",sub).toString().toByteArray()),Base64.NO_WRAP)
-        fun uuidV7():String {
-            val r=UUID.randomUUID(); val ms=System.currentTimeMillis()
-            return UUID((ms shl 16) or 0x7000L or (r.mostSignificantBits and 0xfffL), (r.leastSignificantBits and 0x3fffffffffffffffL) or Long.MIN_VALUE).toString()
+        /** Deterministic UUIDv7 lets live delivery and later explicit history import deduplicate. */
+        fun stableId(sender:String,body:String,received:Long,sub:Int):String {
+            val senderBytes=sender.toByteArray(Charsets.UTF_8)
+            val bodyBytes=body.toByteArray(Charsets.UTF_8)
+            val identity=ByteBuffer.allocate(4+senderBytes.size+4+bodyBytes.size+8+4)
+                .putInt(senderBytes.size).put(senderBytes).putInt(bodyBytes.size).put(bodyBytes).putLong(received).putInt(sub).array()
+            val random=MessageDigest.getInstance("SHA-256").digest(identity)
+            val timestamp=received.coerceAtLeast(0L) and 0x0000ffffffffffffL
+            val most=(timestamp shl 16) or 0x7000L or (((random[6].toLong() and 0x0fL) shl 8)) or (random[7].toLong() and 0xffL)
+            var least=0L
+            for(i in 8..15) least=(least shl 8) or (random[i].toLong() and 0xffL)
+            least=(least and 0x3fffffffffffffffL) or Long.MIN_VALUE
+            return UUID(most,least).toString()
         }
     }
 }

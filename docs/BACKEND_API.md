@@ -2,20 +2,22 @@
 
 [项目首页](../README.md) · [文档索引](README.md)
 
-后端位于 `server/`，沿用 Android MVP 的单用户、单进程加密持久化服务。Web 控制台位于 `web_client/`，可通过根目录 `tools/start.ps1` 与后端一起构建启动。PostgreSQL、多租户、多实例尚未实现。
+后端位于 `server/`，支持加密文件快照与 PostgreSQL 加密租户快照；每个进程绑定一个租户，同租户多实例由数据库 advisory lock 拒绝。设备级 admin/editor/viewer 权限限制接口。尚无逐实体关系表、同租户水平多实例或独立用户/组账户。Web 控制台位于 `web_client/`，可通过根目录 `tools/start.ps1` 与后端一起构建启动。
 
 当前 Android／Web 使用 v2 E2EE 消息接口。下文 v1 消息分类、搜索、操作及审核仅适用于未开启 E2EE 的旧明文库；身份、会话、设备和配置仍使用 v1。任一 E2EE 设备注册后，服务器全局拒绝旧明文消息接口。代理应同时转发 `/api/v1/*`、`/api/v2/*` 和 `/healthz`。
 
 ## 端到端加密消息协议
 
 - 注册请求带 `e2ee:true`，签名原文在旧四行后追加 `\ne2ee-v1`。成功后用同一设备认证读取 `GET /api/v2/crypto/params`，参数和信封格式见[端到端加密](END_TO_END_ENCRYPTION.md)。
-- `GET /api/v2/encrypted-messages?cursor=0&limit=50` 返回 `{messages, cursor, has_more}`；每条外层字段为 `message_id`、`device_id`、`received_at`、`revision`、`ciphertext`。客户端必须使用外层修订号和身份，不能信任内层旧修订号。
+- `GET /api/v2/encrypted-messages?cursor=0&limit=50` 返回 `{messages, cursor, has_more}`；普通记录外层字段为 `message_id`、`device_id`、`received_at`、`revision`、`ciphertext`。启用服务端保留期限后，过期记录以 `deleted:true` 墓碑返回，`ciphertext` 为空、`device_id` 为空；客户端应删除本地消息及待处理操作，但仍需推进 revision 游标。客户端必须使用外层修订号和身份，不能信任内层旧修订号。
 - `POST /api/v2/encrypted-messages/sync` 接收 `{messages:[...]}`，每条包含 `message_id`、`received_at`、`ciphertext`，覆盖已有不同密文时必须带当前 `base_revision`。冲突返回 `409 revision_conflict`，整批回滚；相同密文重放幂等，新消息可以省略 `base_revision`。单批 1～50 条，请求上限 5 MiB。
 - 客户端只有确认返回消息 ID、时间、密文及有效修订号后，才确认上传或移除操作队列；HTTP 200 本身不代表每条记录都得到确认。密文内保存 `corrected_category`，不覆盖模型原 `category`。
 - 恢复／归档／取消归档／纠错写入时附带 `operation_id` 与 `operation_kind`（`restore`／`archive`／`unarchive`／`feedback`）。服务持久化独立密文操作收据；同 ID、同消息和动作重试只返回当前记录，标记 `operation_replayed:true`，不重放旧密文。同 ID 改用于其他消息或动作返回 `409 operation_conflict`。重放 ACK 的密文可能不同于旧请求，客户端必须解密并采用服务器当前记录，不能重新覆盖较新的操作。
 - `POST /api/v2/legacy-migration` 的 `message_ids` 每次最多 50 项，只移除同一设备且已有同 ID／接收时间匹配密文的旧记录。`complete:true` 仅在所有剩余旧记录均有匹配密文时清理旧记录和关联反馈／操作／别名，否则 `409 migration_incomplete` 保留数据。浏览器配对不自动调用全库清理。
 
 E2EE 新消息不经过服务端分类、全文搜索或纠错审核；当前客户端没有端侧模型。Web 在本机解密后搜索，Android 使用本地索引。迁移尚未完成时，服务器遗留快照仍可能包含管理员可读的旧正文。
+
+可通过 `PRIVRELAY_RETENTION_DAYS` / `-retention-days` 为 E2EE 密文启用服务端保留期限（默认关闭）。过期记录变为持久化删除墓碑，沿用全局 revision 游标通知 Android 与 Web 删除各自本地记录；操作收据随内容一同清除，之后旧客户端上传会遇到修订冲突并先拉取删除状态。墓碑仅保留消息 ID、接收时间与修订号，不含正文密文。该机制不清理 E2EE 启用前遗留的旧明文记录、离线设备断连期间的本地副本、备份文件或分类器独立反馈卷。
 
 ## 启动与部署
 
@@ -60,11 +62,15 @@ E2EE 新消息不经过服务端分类、全文搜索或纠错审核；当前客
 | POST | `/api/v1/messages/{id}/feedback` | 新纠错返回 `{status:"pending_review"}`；重试返回已有审核状态，不覆盖模型原始预测 |
 | GET | `/api/v1/feedback` | 反馈分页、状态计数与已通过类别分布，不含短信正文 |
 | PUT | `/api/v1/feedback/{operation_id}` | 通过或驳回待审核反馈，记录审核设备与时间 |
+| POST | `/api/v1/feedback/{operation_id}/withdraw` | 持久撤回此反馈的后续审核与导出资格 |
 | GET / PUT | `/api/v1/filter/rules` | 读取 / 保存完整规则 |
 | GET | `/api/v1/devices` | Device 数组，不返回令牌哈希 |
 | DELETE | `/api/v1/devices/{id}` | 撤销设备，关闭其 WebSocket，返回 `{revoked:true}` |
+| PUT | `/api/v1/devices/{id}/role` | 管理员设置设备角色 `admin / editor / viewer`；不能降级最后一个有效管理员 |
 | GET | `/api/v1/status` | 消息 / 分类 / 隔离 / 设备连接 / 待复核统计 |
 | GET | `/api/v1/ws` | 升级 WebSocket，仅推送 `{"event":"changed"}` |
+
+设备角色以已配对设备为主体：`admin` 可管理配对、设备、规则、AI 配置和导出；`editor` 可同步消息、发起归档/恢复/纠错及撤回授权；`viewer` 仅可读取。旧快照缺少角色时按管理员兼容。管理员生成配对码时选择新设备角色，默认 `editor`。未认证配对接口仍要求一次性码和设备签名。
 
 所有 epoch 时间：Message 的 `received_at` 是**毫秒**，设备 `expires_at`、配对码 `expires_at` 和 `server_time` 是**秒**。令牌有效期 90 天；撤销或到期后返回 401，本地历史不清除。
 
@@ -123,10 +129,11 @@ action：`allow / quarantine`。confidence、risk 均为 0–1。不要将待分
 
 ### 纠错审核
 
-- `GET /api/v1/feedback?status=pending_review&offset=0&limit=20`：返回 `{feedback:[...], total, offset, has_more, counts, corrections}`。status 可为空或 `pending_review / approved / rejected`，limit 为 1–50。counts 为全部反馈的状态计数，corrections 为已通过记录的 `原预测→纠正类别` 分布；均按纠错记录数统计，不代表独立短信误判率。
+- `GET /api/v1/feedback?status=pending_review&offset=0&limit=20`：返回 `{feedback:[...], total, offset, has_more, counts, corrections}`。status 可为空或 `pending_review / approved / rejected / withdrawn`，limit 为 1–50。counts 为全部反馈的状态计数，corrections 为仍有授权的已通过记录 `原预测→纠正类别` 分布；均按纠错记录数统计，不代表独立短信误判率。
 - `PUT /api/v1/feedback/{operation_id}`：请求 `{"review_status":"approved"}` 或 `rejected`，返回完整反馈。仅待审核可变更；同结论重试幂等，反向更改返回 409。记录审核设备 `reviewed_by` 与 epoch 秒 `reviewed_at`，刷盘失败返回 503 并回滚。
 - 反馈额外保留提交时的 `predicted_category / model_version`；旧快照缺少这些字段时，列表从当前消息补充显示，不能作为原始预测的历史证据。列表不复制短信正文；查看短信使用已有详情接口。
 - 已审核反馈再次提交同一个 operation_id，返回已有审核状态，不重新打开队列。审核不改变短信、隔离动作或模型参数，也不会自动向分类器发送数据。模型评估和训练仍需单独明确授权。
+- `POST /api/v1/feedback/{operation_id}/withdraw` 可幂等撤回单条反馈。服务器写入撤回时间和设备 tombstone，拒绝后续审核、在列表显示 `withdrawn`，并从所有后续导出中排除；原纠错记录保留作重放防护。已下载到客户端的文件、备份或已送入外部系统的副本无法由服务器远程擦除，操作者必须另行删除。
 
 ### 规则
 
@@ -166,7 +173,9 @@ cd android_client
 flutter test integration_test/mvp_test.dart --flavor dev -d <序列号> --dart-define=PAIRING_CODE=<刚生成的码> --dart-define=VAULT_PASSPHRASE=synthetic-test-passphrase
 ```
 
-该集成测试使用合成短信和合成隔离记录，不验证真实模型，会撤销测试设备；当前 E2EE 修订尚未真机验收。测试运行器会覆盖 dev 调试应用，不应在用户正式应用上随意执行。生产安卓仍要求 HTTPS；不要通过放宽 Release 明文网络限制完成联调。
+若要在专用设备额外检查系统短信 Provider 历史读取，可临时授予 dev 包 `READ_SMS` 并追加 `--dart-define=DEVICE_SMS_HISTORY_SMOKE=true`；这只校验字段和数量，不打印或同步历史正文。完成后撤回该权限。
+
+该集成测试使用合成短信和合成隔离记录，不验证真实模型；当前流程确认最后一个管理员无法自撤销，随后解除本机配对。2026-10-23 已在 Android 15 真机运行通过。测试运行器会覆盖 dev 调试应用，不应在用户正式应用上随意执行。生产安卓仍要求 HTTPS；不要通过放宽 Release 明文网络限制完成联调。
 
 ## AI / LLM 配置
 
@@ -179,6 +188,6 @@ flutter test integration_test/mvp_test.dart --flavor dev -d <序列号> --dart-d
 - 消息新增 `archived` 布尔值，旧快照默认为 `false`，归档变化沿用现有 revision 同步流。
 - `POST /api/v1/messages/{id}/archive`、`.../unarchive` 接收与恢复相同的 `operation_id`；重复设置同一状态不会产生新修订。恢复到收件箱也会取消归档。
 - `GET /api/v1/messages/search` 新增 `archived=false|true|all`，默认未归档。专属隔离查询始终包含归档消息；Web 隔离页显式请求 `all`，避免隐藏可恢复记录。
-- `POST /api/v1/feedback/export` 必须带 `consent:true`、`purpose:evaluation|training`、`include_text`、`offset` 和 `limit`（1–100）。仅导出已通过审核的记录，默认不含正文；`include_text:true` 才附带 `text`、`sender`。返回 `schema_version:1`、`samples`、`total`、`offset`、`has_more`。每次分页导出在加密快照中记录设备、时间、用途、是否包含正文和数量，保留最近 1000 次记录；不会调用外部服务或启动训练。
+- `POST /api/v1/feedback/export` 必须带 `consent:true`、`purpose:evaluation|training`、`include_text`、`offset` 和 `limit`（1–100）。仅导出已通过审核且未撤回的记录，默认不含正文；`include_text:true` 才附带 `text`、`sender`。响应附带随机 `export_id` 与 `consent:true` 收据。每次分页导出在加密快照中记录同一 ID、设备、时间、用途、是否包含正文和数量，保留最近 1000 次记录；不会调用外部服务或启动训练。分类器的手动导入器要求服务器收据、训练用途、正文授权及操作者授权记录，将其转换为仅本机保存的 `human_verified` / `training_only` JSONL；它不自动训练或上传模型。
 
 模型调用使用请求开始时的配置快照，在全局锁外执行。设备撤销后不提交在途上传；配置变化后舍弃旧分类结果并正常保存待分类消息。后台补分类按消息轮转，提交前检查修订号，避免覆盖并发恢复或归档。WebSocket 每连接独立写入并合并变更提示，慢客户端不会占用数据锁。

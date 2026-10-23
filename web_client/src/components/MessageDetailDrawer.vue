@@ -18,6 +18,14 @@
       </div>
 
       <div class="message-text">{{ message.body }}</div>
+      <div v-if="message.content_kind === 'mms' || message.attachments?.length" class="mms-attachments">
+        <div v-for="(attachment, index) in message.attachments ?? []" :key="`${message.message_id}-${index}`" class="mms-attachment">
+          <img v-if="attachment.mime_type.startsWith('image/')" :src="attachmentUrl(attachment)" :alt="attachment.filename" class="mms-image">
+          <a v-else :href="attachmentUrl(attachment)" :download="safeFilename(attachment.filename)">{{ attachment.filename }} · {{ attachment.mime_type }} · {{ attachment.size }} bytes</a>
+        </div>
+        <p v-if="!message.attachments?.length && !message.attachments_truncated" class="muted">此彩信没有可显示的附件</p>
+        <el-alert v-if="message.attachments_truncated" type="warning" :closable="false" title="部分彩信附件超过 Android 端 2 MiB 同步上限，仅保存在系统短信存储中。" />
+      </div>
       <p v-if="message.corrected_category" class="muted">用户纠正：{{ categoryMeta(message.corrected_category).label }}（原始模型预测保持不变）</p>
 
       <el-alert
@@ -164,4 +172,18 @@ function submitFeedback(): void {
   emit('feedback', corrected.value)
   corrected.value = ''
 }
+
+function attachmentUrl(attachment: NonNullable<Message['attachments']>[number]): string {
+  return `data:${attachment.mime_type};base64,${attachment.data_base64}`
+}
+
+function safeFilename(filename: string): string {
+  return filename.replace(/[\\/\r\n\0]/g, '_').slice(0, 160) || 'attachment'
+}
 </script>
+
+<style scoped>
+.mms-attachments { display: grid; gap: 10px; margin: 14px 0; }
+.mms-attachment { min-width: 0; overflow-wrap: anywhere; }
+.mms-image { display: block; max-width: 100%; max-height: 420px; object-fit: contain; border-radius: 8px; }
+</style>

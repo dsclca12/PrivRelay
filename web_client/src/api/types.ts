@@ -29,11 +29,15 @@ export interface Message {
   classifier_action?: 'allow' | 'block'
   classifier_reason?: string
   classifier_threshold?: number
+  content_kind?: 'sms' | 'mms'
+  attachments_truncated?: boolean
+  attachments?: Array<{ filename: string; mime_type: string; data_base64: string; size: number }>
 }
 
 export interface Device {
   device_id: string
   name: string
+  role?: 'admin' | 'editor' | 'viewer'
   public_key?: string
   token_hash?: string
   active: boolean
@@ -74,6 +78,7 @@ export interface EncryptedMessage {
   device_id: string
   received_at: number
   revision: number
+  deleted?: boolean
   ciphertext: string
 }
 

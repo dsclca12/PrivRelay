@@ -1,7 +1,8 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Text;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../app/app.dart';
+import '../core/localized_text.dart';
 import '../data/models/message.dart';
 
 class AISettingsPage extends ConsumerStatefulWidget {
@@ -130,7 +131,7 @@ class _AISettingsPageState extends ConsumerState<AISettingsPage> {
         DropdownButtonFormField<String>(
           initialValue: value['mode'] as String,
           isExpanded: true,
-          decoration: const InputDecoration(labelText: '分类方式'),
+          decoration: InputDecoration(labelText: localizeText(context, '分类方式')),
           items: const [
             DropdownMenuItem(value: 'disabled', child: Text('关闭 LLM，使用轻量分类器')),
             DropdownMenuItem(
@@ -147,8 +148,8 @@ class _AISettingsPageState extends ConsumerState<AISettingsPage> {
           enabled: !busy,
           keyboardType: TextInputType.url,
           autocorrect: false,
-          decoration: const InputDecoration(
-            labelText: 'API 基础地址（通常以 /v1 结尾）',
+          decoration: InputDecoration(
+            labelText: localizeText(context, 'API 基础地址（通常以 /v1 结尾）'),
             border: OutlineInputBorder(),
           ),
         ),
@@ -157,8 +158,8 @@ class _AISettingsPageState extends ConsumerState<AISettingsPage> {
           controller: model,
           enabled: !busy,
           autocorrect: false,
-          decoration: const InputDecoration(
-            labelText: '模型名称',
+          decoration: InputDecoration(
+            labelText: localizeText(context, '模型名称'),
             border: OutlineInputBorder(),
           ),
         ),
@@ -170,9 +171,12 @@ class _AISettingsPageState extends ConsumerState<AISettingsPage> {
           autocorrect: false,
           enableSuggestions: false,
           decoration: InputDecoration(
-            labelText: value['has_api_key'] == true
-                ? 'API Key（已保存，留空保留）'
-                : 'API Key（免鉴权服务可留空）',
+            labelText: localizeText(
+              context,
+              value['has_api_key'] == true
+                  ? 'API Key（已保存，留空保留）'
+                  : 'API Key（免鉴权服务可留空）',
+            ),
             border: const OutlineInputBorder(),
           ),
         ),

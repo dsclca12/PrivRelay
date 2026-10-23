@@ -46,7 +46,7 @@
     <MessageTable
       :rows="rows"
       :loading="loading"
-      show-restore
+      :show-restore="auth.role !== 'viewer'"
       empty-text="拦截箱是空的 —— 没有被隔离的短信"
       @select="openDetail"
       @restore="onRestore"
@@ -60,6 +60,7 @@
     <MessageDetailDrawer
       v-model="drawerVisible"
       :message="detail"
+      :allow-actions="auth.role !== 'viewer'"
       @restore="detail && onRestore(detail)"
       @feedback="onFeedback"
     />
@@ -77,9 +78,11 @@ import { errorText } from '../stores/auth'
 import { useMessagesStore } from '../stores/messages'
 import { useMessageSearch } from '../composables/useMessageSearch'
 import { useMessageActions } from '../composables/useMessageActions'
+import { useAuthStore } from '../stores/auth'
 
 const messages = useMessagesStore()
 const actions = useMessageActions()
+const auth = useAuthStore()
 const { keyword, page, pageSize, rows, total, loading, error, reload } = useMessageSearch('quarantine')
 const restoredCount = computed(() => messages.summary?.restored ?? '—')
 const reasonStats = computed(() => messages.summary?.quarantine_reasons ?? {})

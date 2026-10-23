@@ -29,12 +29,15 @@
 
 Android 权限：
 
-- RECEIVE_SMS：用户点击授权后采集新短信。
+- RECEIVE_SMS：基础采集模式由用户点击授权；持有默认 SMS 角色时由系统授予角色所需能力。
+- READ_SMS：基础模式只在用户主动选择历史导入后请求；每次最多读取最近 5,000 条系统 SMS 收件箱记录。默认角色权限由 Android 角色授权流程管理。
+- SEND_SMS：应用内发送在用户确认具体号码和正文后请求；默认角色下 Android 管理所需权限。运营商可能收费且客户端不确认送达。
+- RECEIVE_MMS / RECEIVE_WAP_PUSH：仅用于用户主动授予的默认 SMS 角色，接收 WAP_PUSH_DELIVER 并通过 SmsManager 下载到系统 MMS Provider；下载完成后读取发件人、文本和最多 2 MiB 附件，进入本地加密消息和 E2EE 同步。超限附件保留在系统 Provider。
 - POST_NOTIFICATIONS：用户选择后发布通用通知，不含正文。
 - INTERNET / ACCESS_NETWORK_STATE：连接用户确认的服务器并补发。
 - RECEIVE_BOOT_COMPLETED：设备启动后调度未完成任务。
 - CAMERA：仅在进入扫码绑定页时请求，用于读取配对二维码；拒绝后仍可手动绑定。相机不是必需硬件。
-- WorkManager 的合并清单还包含其调度所需权限（例如 WAKE_LOCK）。不申请读取短信历史、通讯录、电话状态、定位或外部存储。
+- WorkManager 的合并清单还包含其调度所需权限（例如 WAKE_LOCK）。不申请通讯录、电话状态、定位或外部存储。默认 SMS 角色只在用户主动点击并确认后通过系统角色对话框申请。
 
 依赖没有引入第三方短信分析、广告、统计或崩溃上报 SDK。原生 P-256 / AES-GCM 使用系统 Android Keystore 和 JCA。上游模型及测试用 Python 依赖不打包进 Android APK。
 

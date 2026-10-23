@@ -1,5 +1,6 @@
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:privrelay/app/app.dart';
@@ -36,7 +37,12 @@ void main() {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [repositoryProvider.overrideWithValue(r)],
-          child: const MaterialApp(home: Scaffold(body: AISettingsPage())),
+          child: const MaterialApp(
+            locale: Locale('zh', 'CN'),
+            supportedLocales: [Locale('zh', 'CN'), Locale('en')],
+            localizationsDelegates: GlobalMaterialLocalizations.delegates,
+            home: Scaffold(body: AISettingsPage()),
+          ),
         ),
       );
       await tester.pumpAndSettle();

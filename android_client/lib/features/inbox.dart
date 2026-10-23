@@ -1,8 +1,13 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Text;
+
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../app/app.dart';
+import '../core/localized_text.dart';
 import '../data/models/message.dart';
 
 class InboxPage extends ConsumerStatefulWidget {
@@ -36,7 +41,7 @@ class _InboxPageState extends ConsumerState<InboxPage> {
               limit = 50;
             }),
             decoration: InputDecoration(
-              hintText: '搜索发件人或正文',
+              hintText: localizeText(context, '搜索发件人或正文'),
               prefixIcon: const Icon(Icons.search),
               filled: true,
               border: OutlineInputBorder(
@@ -285,6 +290,24 @@ class DetailPage extends ConsumerWidget {
                 m.body,
                 style: Theme.of(context).textTheme.bodyLarge,
               ),
+              if (m.contentKind == 'mms' &&
+                  m.attachments.isEmpty &&
+                  !m.attachmentsTruncated)
+                Padding(
+                  padding: EdgeInsets.only(top: 16),
+                  child: Text(localizeText(context, '彩信暂无可显示的附件')),
+                ),
+              if (m.attachmentsTruncated)
+                Padding(
+                  padding: EdgeInsets.only(top: 16),
+                  child: Text(
+                    localizeText(context, '部分彩信附件超过 2 MiB 同步上限，已保留在系统短信存储中。'),
+                  ),
+                ),
+              for (final attachment in m.attachments) ...[
+                const SizedBox(height: 16),
+                _MmsAttachment(attachment: attachment),
+              ],
               const SizedBox(height: 24),
               const Divider(),
               ListTile(
@@ -390,6 +413,45 @@ class DetailPage extends ConsumerWidget {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+class _MmsAttachment extends StatelessWidget {
+  final Map<String, dynamic> attachment;
+  const _MmsAttachment({required this.attachment});
+
+  @override
+  Widget build(BuildContext context) {
+    final mime = attachment['mime_type'] as String? ?? '';
+    final name = attachment['filename'] as String? ?? '彩信附件';
+    final encoded = attachment['data_base64'] as String?;
+    Uint8List? bytes;
+    try {
+      if (encoded != null) bytes = base64Decode(encoded);
+    } on FormatException {
+      bytes = null;
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('$name · $mime'),
+            if (bytes != null && mime.startsWith('image/')) ...[
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.memory(bytes, fit: BoxFit.contain),
+              ),
+            ] else if (bytes != null)
+              Text(
+                '${bytes.length} ${localizeText(context, 'bytes')} · ${localizeText(context, '已包含在端到端加密同步中')}',
+              ),
+          ],
+        ),
       ),
     );
   }

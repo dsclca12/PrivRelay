@@ -48,6 +48,7 @@ func TestSlowClassificationDoesNotBlockReadsOrRevocation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("read blocked by model")
 	}
+	s.store.Devices["backup-admin-0001"] = Device{ID: "backup-admin-0001", Role: "admin", Active: true, Expires: time.Now().Add(time.Hour).Unix()}
 	if w := call(t, s, "DELETE", "/api/v1/devices/test-device-0001", token, nil); w.Code != 200 {
 		t.Fatal(w.Code)
 	}

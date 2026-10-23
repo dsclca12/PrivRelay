@@ -1,10 +1,11 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide Text;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../app/app.dart';
 import '../core/pairing.dart';
+import '../core/localized_text.dart';
 import 'pairing_scanner.dart';
 
 class SettingsPage extends ConsumerStatefulWidget {
@@ -60,6 +61,67 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     }
   }
 
+  Future<void> composeSms() async {
+    final recipient = TextEditingController();
+    final body = TextEditingController();
+    try {
+      final ready = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('发送短信'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: recipient,
+                keyboardType: TextInputType.phone,
+                decoration: InputDecoration(
+                  labelText: localizeText(context, '收件号码'),
+                ),
+              ),
+              TextField(
+                controller: body,
+                minLines: 2,
+                maxLines: 5,
+                decoration: InputDecoration(
+                  labelText: localizeText(context, '短信正文'),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('继续'),
+            ),
+          ],
+        ),
+      );
+      if (ready != true || !mounted) return;
+      final to = recipient.text.trim();
+      final message = body.text.trim();
+      final confirmed = await confirm(
+        context,
+        '确认发送短信？',
+        '将通过系统短信服务向 $to 发送以下内容，可能产生运营商费用。请确认号码和正文无误：\n\n$message',
+      );
+      if (!confirmed || !mounted) return;
+      final parts = await ref.read(repositoryProvider).sendSms(to, message);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已提交系统发送（$parts 段）；运营商送达状态不可用。')),
+        );
+      }
+    } finally {
+      recipient.dispose();
+      body.dispose();
+    }
+  }
+
   @override
   void dispose() {
     address.dispose();
@@ -81,9 +143,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           obscureText: true,
           autocorrect: false,
           enableSuggestions: false,
-          decoration: const InputDecoration(
-            labelText: '端到端加密口令（至少 12 个字符）',
-            helperText: '在每台授权设备上输入相同口令；口令不会发送到服务器。',
+          decoration: InputDecoration(
+            labelText: localizeText(context, '端到端加密口令（至少 12 个字符）'),
+            helperText: localizeText(context, '在每台授权设备上输入相同口令；口令不会发送到服务器。'),
             border: OutlineInputBorder(),
           ),
         ),
@@ -109,8 +171,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           controller: address,
           keyboardType: TextInputType.url,
           autocorrect: false,
-          decoration: const InputDecoration(
-            labelText: '服务器地址',
+          decoration: InputDecoration(
+            labelText: localizeText(context, '服务器地址'),
             hintText: 'https://relay.example.com',
             border: OutlineInputBorder(),
           ),
@@ -121,8 +183,8 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           obscureText: true,
           autocorrect: false,
           enableSuggestions: false,
-          decoration: const InputDecoration(
-            labelText: '一次性配对码',
+          decoration: InputDecoration(
+            labelText: localizeText(context, '一次性配对码'),
             border: OutlineInputBorder(),
           ),
         ),
@@ -141,12 +203,83 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         const SizedBox(height: 24),
         Text('采集与隐私', style: Theme.of(context).textTheme.titleLarge),
+        DropdownButtonFormField<String>(
+          initialValue: r.languagePreference,
+          decoration: InputDecoration(labelText: '显示语言 / Display language'),
+          items: const [
+            DropdownMenuItem(
+              value: 'system',
+              child: Text('跟随系统 / System default'),
+            ),
+            DropdownMenuItem(value: 'zh', child: Text('简体中文')),
+            DropdownMenuItem(value: 'en', child: Text('English')),
+          ],
+          onChanged: (value) {
+            if (value != null) perform(context, () => r.setLanguage(value));
+          },
+        ),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.sms_outlined),
           title: const Text('接收新短信'),
           subtitle: Text(r.permissions['sms'] == true ? '已授权' : '未授权，已有消息仍可查看'),
           onTap: () => perform(context, r.requestSms),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.history),
+          title: const Text('导入系统短信历史'),
+          subtitle: const Text('仅在你点击后申请读取权限；每次最多导入最近 5,000 条，重复导入会自动去重。'),
+          onTap: () => perform(context, () async {
+            final count = await r.importSystemHistory();
+            if (context.mounted) {
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(SnackBar(content: Text('已处理 $count 条历史短信')));
+            }
+          }),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: Icon(
+            r.permissions['default_sms'] == true
+                ? Icons.sms
+                : Icons.sms_outlined,
+          ),
+          title: Text(localizeText(context, '默认短信应用')),
+          subtitle: Text(
+            localizeText(
+              context,
+              r.permissions['default_sms'] == true
+                  ? 'PrivRelay 当前管理系统短信收件箱'
+                  : '由 Android 系统管理短信；设为默认应用后可接收 SMS_DELIVER 并写入系统收件箱。',
+            ),
+          ),
+          trailing: r.permissions['default_sms'] == true
+              ? const Icon(Icons.check_circle_outline)
+              : TextButton(
+                  onPressed: () => perform(context, () async {
+                    if (!await confirm(
+                      context,
+                      '更改默认短信应用？',
+                      'Android 会将短信收取和管理交给 PrivRelay。你可随时在系统设置中切回原短信应用。',
+                    )) {
+                      return;
+                    }
+                    if (!await r.requestDefaultSmsRole() && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('未更改默认短信应用')),
+                      );
+                    }
+                  }),
+                  child: Text(localizeText(context, '设为默认')),
+                ),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.send_outlined),
+          title: const Text('发送短信'),
+          subtitle: const Text('需单独授予短信发送权限；每次发送前会显示号码、正文和确认。运营商可能收费。'),
+          onTap: () => composeSms(),
         ),
         ListTile(
           contentPadding: EdgeInsets.zero,
@@ -157,7 +290,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         ),
         DropdownButtonFormField<String>(
           initialValue: r.notificationMode,
-          decoration: const InputDecoration(labelText: '新短信提醒'),
+          decoration: InputDecoration(
+            labelText: localizeText(context, '新短信提醒'),
+          ),
           items: const [
             DropdownMenuItem(value: 'all', child: Text('所有正常保留的短信')),
             DropdownMenuItem(value: 'important', child: Text('重要与风险消息（含待确定）')),
@@ -223,6 +358,15 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           title: const Text('后台补发'),
           subtitle: const Text('使用系统任务调度；省电限制下可能延迟。关闭后仍会保存新短信。'),
         ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: r.foregroundSyncEnabled,
+          onChanged: r.backgroundEnabled
+              ? (v) => perform(context, () => r.setForegroundSync(v))
+              : null,
+          title: const Text('前台实时同步（可选）'),
+          subtitle: const Text('显示持续通知并提高后台补发及时性；会增加耗电，系统仍可能限制运行。'),
+        ),
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.auto_awesome),
@@ -279,13 +423,111 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
           ),
         const Divider(),
         const Text(
-          'PrivRelay · Android MVP 0.1\n本版不是默认短信应用，无法抑制系统短信应用的通知。自托管服务器能够读取正文。分类失败时正常保留，不会删除短信。',
+          'PrivRelay · Android MVP 0.1\n可选申请 Android 默认短信角色；未切换时系统短信应用仍负责短信通知。SMS 正文端到端加密同步，MMS 附件暂不跨设备同步。分类失败时保留消息。',
           style: TextStyle(fontSize: 12),
         ),
         const SizedBox(height: 24),
       ],
     );
   }
+}
+
+class ComposeSmsPage extends ConsumerStatefulWidget {
+  const ComposeSmsPage({
+    super.key,
+    required this.recipient,
+    required this.body,
+  });
+  final String recipient;
+  final String body;
+  @override
+  ConsumerState<ComposeSmsPage> createState() => _ComposeSmsPageState();
+}
+
+class _ComposeSmsPageState extends ConsumerState<ComposeSmsPage> {
+  late final recipient = TextEditingController(text: widget.recipient);
+  late final body = TextEditingController(text: widget.body);
+  bool sending = false;
+
+  @override
+  void dispose() {
+    recipient.dispose();
+    body.dispose();
+    super.dispose();
+  }
+
+  Future<void> send() async {
+    final to = recipient.text.trim();
+    final text = body.text.trim();
+    if (to.isEmpty || text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(localizeText(context, '请输入收件号码和短信正文'))),
+      );
+      return;
+    }
+    final approved = await confirm(
+      context,
+      '确认发送短信？',
+      '将通过系统短信服务向 $to 发送以下内容，可能产生运营商费用。请确认号码和正文无误：\n\n$text',
+    );
+    if (!approved || !mounted) return;
+    setState(() => sending = true);
+    try {
+      final parts = await ref.read(repositoryProvider).sendSms(to, text);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(localizeText(context, '已提交系统发送（$parts 段）；运营商送达状态不可用。')),
+        ),
+      );
+      context.go(
+        ref.read(repositoryProvider).onboarded ? '/inbox' : '/welcome',
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(localizeText(context, error.toString()))),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => sending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      leading: BackButton(
+        onPressed: () => context.go(
+          ref.read(repositoryProvider).onboarded ? '/inbox' : '/welcome',
+        ),
+      ),
+      title: Text(localizeText(context, '发送短信')),
+    ),
+    body: ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        TextField(
+          controller: recipient,
+          keyboardType: TextInputType.phone,
+          decoration: InputDecoration(labelText: localizeText(context, '收件号码')),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: body,
+          minLines: 4,
+          maxLines: 10,
+          decoration: InputDecoration(labelText: localizeText(context, '短信正文')),
+        ),
+        const SizedBox(height: 16),
+        FilledButton.icon(
+          onPressed: sending ? null : send,
+          icon: const Icon(Icons.send),
+          label: Text(localizeText(context, sending ? '正在发送…' : '确认发送')),
+        ),
+      ],
+    ),
+  );
 }
 
 class DiagnosticsPage extends ConsumerWidget {
@@ -422,7 +664,7 @@ class _RulesPageState extends ConsumerState<RulesPage> {
         const SizedBox(height: 16),
         DropdownButtonFormField<String>(
           initialValue: v['mode'],
-          decoration: const InputDecoration(labelText: '工作模式'),
+          decoration: InputDecoration(labelText: localizeText(context, '工作模式')),
           items: const [
             DropdownMenuItem(value: 'classify', child: Text('仅分类')),
             DropdownMenuItem(value: 'filter', child: Text('智能过滤')),
@@ -453,8 +695,8 @@ class _RulesPageState extends ConsumerState<RulesPage> {
           controller: white,
           minLines: 2,
           maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: '白名单（完整发件人，每行一个）',
+          decoration: InputDecoration(
+            labelText: localizeText(context, '白名单（完整发件人，每行一个）'),
             border: OutlineInputBorder(),
           ),
         ),
@@ -463,8 +705,8 @@ class _RulesPageState extends ConsumerState<RulesPage> {
           controller: black,
           minLines: 2,
           maxLines: 4,
-          decoration: const InputDecoration(
-            labelText: '黑名单（完整发件人，每行一个）',
+          decoration: InputDecoration(
+            labelText: localizeText(context, '黑名单（完整发件人，每行一个）'),
             border: OutlineInputBorder(),
           ),
         ),
@@ -529,7 +771,7 @@ class DevicesPage extends ConsumerWidget {
                     ),
                     trailing: d['active'] == true
                         ? IconButton(
-                            tooltip: '撤销授权',
+                            tooltip: localizeText(context, '撤销授权'),
                             icon: const Icon(Icons.link_off),
                             onPressed: () => perform(context, () async {
                               if (await confirm(

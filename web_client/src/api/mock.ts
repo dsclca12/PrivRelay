@@ -281,9 +281,10 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
       return { logged_out: true } as T
     }
     if (!localStorage.getItem('privrelay.demo-session')) throw new Error('pairing_required')
-    return { device_id: 'demo-pixel8-7f21c4a9', name: '演示浏览器' } as T
+    return { device_id: 'demo-pixel8-7f21c4a9', name: '演示浏览器', role: 'admin' } as T
   }
   if (url.pathname === '/api/v1/pairing-codes' && method === 'POST') {
+    localStorage.setItem('privrelay.demo-pairing-role', String((body as { role?: string } | undefined)?.role ?? 'editor'))
     const expires = Math.floor(Date.now() / 1000) + 600
     localStorage.setItem('privrelay.demo-pairing-expires', String(expires))
     return { pairing_code: 'demo-pairing-code', expires_at: expires } as T
@@ -315,30 +316,38 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
   if (url.pathname === '/api/v1/feedback/export' && method === 'POST') {
     const input = body as { consent: boolean; purpose: string; include_text: boolean; offset: number; limit: number }
     if (!input.consent || !['evaluation', 'training'].includes(input.purpose)) throw new Error('export_consent_required')
-    const rows = s.feedback.filter(f => f.review_status === 'approved').sort((a, b) => a.operation_id.localeCompare(b.operation_id))
+    const rows = s.feedback.filter(f => f.review_status === 'approved' && !f.withdrawn_at).sort((a, b) => a.operation_id.localeCompare(b.operation_id))
     const samples = rows.slice(input.offset, input.offset + input.limit).map(f => {
       const message = s.messages.find(m => m.message_id === f.message_id)
       return { operation_id: f.operation_id, message_id: f.message_id, label: f.corrected_category,
         predicted_category: f.predicted_category, model_version: f.model_version, reviewed_at: f.reviewed_at,
         ...(input.include_text && message ? { text: message.body, sender: message.sender } : {}) }
     })
-    return clone({ schema_version: 1, samples, total: rows.length, offset: input.offset, has_more: input.offset + input.limit < rows.length }) as T
+    return clone({ schema_version: 1, export_id: `demo-export-${Date.now()}`, consent: true, samples, total: rows.length, offset: input.offset, has_more: input.offset + input.limit < rows.length, purpose: input.purpose, include_text: input.include_text }) as T
   }
   if (url.pathname === '/api/v1/feedback' && method === 'GET') {
     const status = url.searchParams.get('status')
     const offset = Number(url.searchParams.get('offset') ?? 0)
     const limit = Number(url.searchParams.get('limit') ?? 20)
-    const rows = s.feedback.filter(f => !status || f.review_status === status).sort((a, b) => a.operation_id.localeCompare(b.operation_id))
-    const counts = { pending_review: 0, approved: 0, rejected: 0 }
+    const rows = s.feedback.filter(f => !status || (f.withdrawn_at ? 'withdrawn' : f.review_status) === status).sort((a, b) => a.operation_id.localeCompare(b.operation_id))
+    const counts = { pending_review: 0, approved: 0, rejected: 0, withdrawn: 0 }
     const corrections: Record<string, number> = {}
     for (const f of s.feedback) {
-      counts[f.review_status]++
-      if (f.review_status === 'approved') {
+      const status = f.withdrawn_at ? 'withdrawn' : f.review_status
+      counts[status]++
+      if (f.review_status === 'approved' && !f.withdrawn_at) {
         const key = `${f.predicted_category}→${f.corrected_category}`
         corrections[key] = (corrections[key] ?? 0) + 1
       }
     }
     return clone({ feedback: rows.slice(offset, offset + limit), total: rows.length, counts, corrections }) as T
+  }
+  const withdrawMatch = url.pathname.match(/^\/api\/v1\/feedback\/([^/]+)\/withdraw$/)
+  if (withdrawMatch && method === 'POST') {
+    const f = s.feedback.find(f => f.operation_id === decodeURIComponent(withdrawMatch[1]!))
+    if (!f) notFound()
+    f.withdrawn_at = Math.floor(Date.now() / 1000)
+    return clone({ status: 'withdrawn' }) as T
   }
   const reviewMatch = url.pathname.match(/^\/api\/v1\/feedback\/([^/]+)$/)
   if (reviewMatch && method === 'PUT') {
@@ -412,6 +421,13 @@ export async function mockRequest<T>(path: string, method: string, body: unknown
 
   if (url.pathname === '/api/v1/devices' && method === 'GET') {
     return clone(s.devices) as T
+  }
+  const deviceRoleMatch = url.pathname.match(/^\/api\/v1\/devices\/([^/]+)\/role$/)
+  if (deviceRoleMatch && method === 'PUT') {
+    const target = s.devices.find(d => d.device_id === decodeURIComponent(deviceRoleMatch[1]!))
+    if (!target) notFound()
+    target.role = (body as { role: 'admin' | 'editor' | 'viewer' }).role
+    return clone(target) as T
   }
   const deviceMatch = url.pathname.match(/^\/api\/v1\/devices\/([^/]+)$/)
   if (deviceMatch && method === 'DELETE') {

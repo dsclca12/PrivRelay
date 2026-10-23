@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">PrivRelay</string>
+    <string name="sync_notification_channel">PrivRelay background sync</string>
+    <string name="sync_notification_title">PrivRelay is syncing in the background</string>
+    <string name="sync_notification_body">New messages are encrypted on this device before syncing.</string>
+    <string name="sms_notification_channel">New messages</string>
+    <string name="sms_notification_title">PrivRelay</string>
+    <string name="sms_notification_body">You received a new message. Open the app to view it.</string>
+</resources>
