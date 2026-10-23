@@ -21,6 +21,24 @@ Future<void> backgroundMain() async {
   }
 }
 
+@pragma('vm:entry-point')
+Future<void> foregroundListenMain() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  RelayRepository? repository;
+  try {
+    repository = await RelayRepository.open(
+      listen: true,
+      persistentSocket: true,
+    );
+    await repository.sync();
+    // The native foreground service owns this isolate. Android destroys the engine
+    // when the user disables persistent sync or the OS stops the service.
+    await Completer<void>().future;
+  } finally {
+    await repository?.close();
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const Bootstrap());

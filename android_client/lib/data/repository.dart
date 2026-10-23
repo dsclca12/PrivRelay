@@ -86,9 +86,14 @@ class RelayRepository extends ChangeNotifier {
   Future<void>? _syncing;
   int _socketAttempt = 0;
   bool _listenEnabled = true;
+  bool _persistentSocket = false;
   bool _remoteMore = false;
+  final List<SmsMessage> liveRelays = <SmsMessage>[];
 
-  static Future<RelayRepository> open({bool listen = true}) async {
+  static Future<RelayRepository> open({
+    bool listen = true,
+    bool persistentSocket = false,
+  }) async {
     const p = SmsPlatform();
     // Prevent headless / foreground DB initialization and queue claims racing.
     while (!await p.lock()) {
@@ -103,14 +108,27 @@ class RelayRepository extends ChangeNotifier {
     }
     final r = RelayRepository(db);
     r._listenEnabled = listen;
+    r._persistentSocket = persistentSocket;
     await r.load();
     if (listen) {
       await p.initialize();
       r._network = Connectivity().onConnectivityChanged.listen((_) {
+        r.connectSocket();
         r.sync();
       });
       p.channel.setMethodCallHandler((call) async {
         if (call.method == 'changed') await r.sync();
+        if (call.method == 'smsReceived') {
+          final message = Map<String, dynamic>.from(call.arguments as Map);
+          unawaited(r._relayReceivedSms(message));
+        }
+        if (call.method == 'liveRelay') {
+          r._acceptLiveRelay(
+            SmsMessage.fromJson(
+              Map<String, dynamic>.from(call.arguments as Map),
+            ),
+          );
+        }
         if (call.method == 'composeIntent') {
           final args = Map<String, dynamic>.from(call.arguments as Map);
           r.pendingCompose = {
@@ -124,6 +142,11 @@ class RelayRepository extends ChangeNotifier {
           r.changed();
         }
       });
+      for (final message in await p.takeLiveRelays()) {
+        final relay = SmsMessage.fromJson(message);
+        r._acceptLiveRelay(relay);
+        if (persistentSocket) await p.publishLiveRelay(relay.toJson());
+      }
       r.connectSocket();
     }
     return r;
@@ -893,6 +916,7 @@ class RelayRepository extends ChangeNotifier {
     _socket = null;
     old?.sink.close();
     if (!_listenEnabled ||
+        (foregroundSyncEnabled && !_persistentSocket) ||
         _closed ||
         token == null ||
         rePair ||
@@ -907,6 +931,7 @@ class RelayRepository extends ChangeNotifier {
       uri,
       headers: {'Authorization': 'Bearer $token'},
       connectTimeout: const Duration(seconds: 8),
+      pingInterval: const Duration(seconds: 25),
     );
     _socket = socket;
     socket.ready
@@ -914,23 +939,119 @@ class RelayRepository extends ChangeNotifier {
           _socketAttempt = 0;
           if (!_closed) sync();
         })
-        .catchError((Object _) {});
+        .catchError((Object _) {
+          if (!_closed && identical(_socket, socket) && !rePair) {
+            _scheduleSocketRetry();
+          }
+        });
     socket.stream.listen(
-      (_) {
-        sync();
+      (frame) {
+        try {
+          final event = jsonDecode(frame as String) as Map<String, dynamic>;
+          if (event['event'] == 'sms_relay') {
+            unawaited(
+              _receiveRelay(Map<String, dynamic>.from(event['message'] as Map)),
+            );
+          } else {
+            unawaited(sync());
+          }
+        } catch (_) {
+          // Ignore malformed transient frames; the durable cursor sync is authoritative.
+        }
       },
-      onError: (Object _) {},
+      onError: (Object _) {
+        if (!_closed && identical(_socket, socket) && !rePair) {
+          _scheduleSocketRetry();
+        }
+      },
       onDone: () {
         if (!_closed && identical(_socket, socket) && !rePair) {
-          _wsRetry = Timer(
-            Duration(
-              seconds: retryDelay(_socketAttempt++, Random().nextDouble()),
-            ),
-            connectSocket,
-          );
+          _scheduleSocketRetry();
         }
       },
     );
+  }
+
+  void _scheduleSocketRetry() {
+    if (_closed ||
+        rePair ||
+        token == null ||
+        server.isEmpty ||
+        _wsRetry?.isActive == true) {
+      return;
+    }
+    _wsRetry = Timer(
+      Duration(seconds: retryDelay(_socketAttempt++, Random().nextDouble())),
+      connectSocket,
+    );
+  }
+
+  Future<void> _relayReceivedSms(Map<String, dynamic> raw) async {
+    final socket = _socket;
+    if (socket == null ||
+        token == null ||
+        rePair ||
+        vaultPassphrase == null ||
+        vaultSalt == null) {
+      return;
+    }
+    try {
+      final message = SmsMessage.fromJson({
+        'message_id': raw['message_id'],
+        'sender': raw['sender'],
+        'body': raw['body'],
+        'received_at': raw['received_at'],
+        'subscription_id': raw['subscription_id'] ?? -1,
+        'slot': raw['slot'] ?? -1,
+        'category': 'uncertain',
+        'action': 'allow',
+        'reason': '实时转发',
+        'needs_review': true,
+      });
+      final ciphertext = await _encryptMessage(message);
+      if (identical(_socket, socket)) {
+        socket.sink.add(
+          jsonEncode({
+            'event': 'sms_relay',
+            'message': {'message_id': message.id, 'ciphertext': ciphertext},
+          }),
+        );
+      }
+    } catch (_) {
+      // The regular encrypted spool and cursor sync remain the retryable path.
+    }
+  }
+
+  Future<void> _receiveRelay(Map<String, dynamic> envelope) async {
+    final passphrase = vaultPassphrase;
+    final salt = vaultSalt;
+    final ciphertext = envelope['ciphertext'];
+    if (passphrase == null || salt == null || ciphertext is! String) return;
+    try {
+      final plaintext = await platform.decryptVault(
+        ciphertext,
+        passphrase,
+        salt,
+      );
+      final message = SmsMessage.fromJson(
+        Map<String, dynamic>.from(jsonDecode(plaintext) as Map),
+      );
+      if (message.id != envelope['message_id']) return;
+      _acceptLiveRelay(message);
+      await platform.publishLiveRelay(message.toJson());
+      if (shouldNotify(notificationMode, message.category, message.action)) {
+        await platform.notify(message.id);
+      }
+    } catch (_) {
+      // A mismatched vault key or invalid frame must not affect the durable inbox.
+    }
+  }
+
+  void _acceptLiveRelay(SmsMessage message) {
+    liveRelays.removeWhere((item) => item.id == message.id);
+    liveRelays.insert(0, message);
+    if (liveRelays.length > 30) liveRelays.removeLast();
+    changed();
   }
 
   Future<Map<String, dynamic>> health() async {
@@ -1037,6 +1158,14 @@ class RelayRepository extends ChangeNotifier {
     await platform.setForegroundSync(enabled);
     await db.setPref('foreground_sync', '$enabled');
     foregroundSyncEnabled = enabled;
+    if (enabled) {
+      _wsRetry?.cancel();
+      final socket = _socket;
+      _socket = null;
+      await socket?.sink.close();
+    } else {
+      connectSocket();
+    }
     changed();
   }
 

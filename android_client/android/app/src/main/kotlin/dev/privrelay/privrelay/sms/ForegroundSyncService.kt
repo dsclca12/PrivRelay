@@ -9,11 +9,18 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import io.flutter.FlutterInjector
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.dart.DartExecutor
 import dev.privrelay.privrelay.R
 
 /** Optional, explicitly user-started runtime for more responsive background draining. */
 class ForegroundSyncService : Service() {
+    private var engine: FlutterEngine? = null
+    private var bridge: NativeBridge? = null
+
     override fun onCreate() {
         super.onCreate()
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
@@ -29,6 +36,7 @@ class ForegroundSyncService : Service() {
         }
         SyncWorker.periodic(this)
         SyncWorker.enqueue(this)
+        startPersistentSocket()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -41,6 +49,30 @@ class ForegroundSyncService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun startPersistentSocket() {
+        try {
+            val loader = FlutterInjector.instance().flutterLoader()
+            loader.startInitialization(applicationContext)
+            loader.ensureInitializationComplete(applicationContext, null)
+            val runtime = FlutterEngine(applicationContext)
+            engine = runtime
+            bridge = NativeBridge(applicationContext, runtime.dartExecutor.binaryMessenger, persistentOwner = true)
+            runtime.dartExecutor.executeDartEntrypoint(
+                DartExecutor.DartEntrypoint(loader.findAppBundlePath(), "foregroundListenMain")
+            )
+        } catch (error: Exception) {
+            Log.e("PrivRelaySync", "Could not start persistent socket runtime", error)
+        }
+    }
+
+    override fun onDestroy() {
+        bridge?.close()
+        bridge = null
+        engine?.destroy()
+        engine = null
+        super.onDestroy()
+    }
 
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onTimeout(startId: Int) {

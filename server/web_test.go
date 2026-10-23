@@ -287,6 +287,38 @@ func TestBrowserAndAndroidWebSocketsAndExpiredSessions(t *testing.T) {
 			t.Fatal(event, err)
 		}
 	}
+	// Verify an encrypted relay to a distinct paired device is volatile.
+	secondToken := "synthetic-second-device-token"
+	s.mu.Lock()
+	s.store.Devices["test-device-0002"] = Device{ID: "test-device-0002", TokenHash: hash(secondToken), Active: true, Expires: time.Now().Add(time.Hour).Unix()}
+	revision := s.store.Revision
+	s.mu.Unlock()
+	targetHeaders := http.Header{"Authorization": []string{"Bearer " + secondToken}}
+	target, _, err := websocket.DefaultDialer.Dial(wsURL, targetHeaders)
+	if err != nil {
+		t.Fatal("second device websocket", err)
+	}
+	defer target.Close()
+	if err := phone.WriteJSON(map[string]any{"event": "sms_relay", "body": "synthetic-should-be-stripped", "message": map[string]string{"message_id": "volatile-001", "ciphertext": "synthetic-client-encrypted-frame", "body": "synthetic-should-be-stripped"}}); err != nil {
+		t.Fatal("relay write", err)
+	}
+	target.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var relay map[string]any
+	if err := target.ReadJSON(&relay); err != nil || relay["event"] != "sms_relay" || relay["body"] != nil {
+		t.Fatal("relay was not forwarded", relay, err)
+	}
+	message, ok := relay["message"].(map[string]any)
+	if !ok || len(message) != 2 {
+		t.Fatal("server forwarded fields outside the encrypted envelope", relay)
+	}
+	s.mu.Lock()
+	_, persisted := s.store.EncryptedMessages["volatile-001"]
+	unchanged := s.store.Revision == revision
+	delete(s.store.Devices, "test-device-0002")
+	s.mu.Unlock()
+	if persisted || !unchanged {
+		t.Fatal("volatile relay was persisted")
+	}
 	s.mu.Lock()
 	d := s.store.Devices["test-device-0001"]
 	d.Expires = time.Now().Add(-time.Second).Unix()

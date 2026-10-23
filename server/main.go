@@ -40,7 +40,7 @@ type Server struct {
 	classifier, classifierKey string
 	client                    *http.Client
 	peers                     map[*websocket.Conn]string
-	peerSignals               map[*websocket.Conn]chan struct{}
+	peerSignals               map[*websocket.Conn]chan []byte
 	retryCursor               string
 	failures                  map[string]int
 	webDir                    string
@@ -70,7 +70,7 @@ func envInt(name string, fallback int) int {
 func newServer(store *Store, classifier string) *Server {
 	return &Server{store: store, code: randomToken(), codeExpires: time.Now().Add(10 * time.Minute), classifier: classifier,
 		pairingRole: "admin",
-		client:      &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}, peers: map[*websocket.Conn]string{}, peerSignals: map[*websocket.Conn]chan struct{}{}, failures: map[string]int{}}
+		client:      &http.Client{Timeout: 3 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirect disabled") }}, peers: map[*websocket.Conn]string{}, peerSignals: map[*websocket.Conn]chan []byte{}, failures: map[string]int{}}
 }
 
 // purgeExpiredEncryptedMessages retains a revisioned tombstone so every E2EE
@@ -758,9 +758,12 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request, d Device) {
 		return
 	}
 	s.peers[conn] = d.ID
-	signal := make(chan struct{}, 1)
+	signal := make(chan []byte, 8)
 	s.peerSignals[conn] = signal
 	done := make(chan struct{})
+	conn.SetReadLimit(64 * 1024)
+	_ = conn.SetReadDeadline(time.Now().Add(70 * time.Second))
+	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(70 * time.Second)) })
 	go func() {
 		defer func() {
 			s.mu.Lock()
@@ -770,22 +773,62 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request, d Device) {
 			close(done)
 			conn.Close()
 		}()
-		conn.SetReadLimit(1024)
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, payload, err := conn.ReadMessage()
+			if err != nil {
 				return
 			}
+			var event struct {
+				Event   string `json:"event"`
+				Message struct {
+					ID         string `json:"message_id"`
+					Ciphertext string `json:"ciphertext"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(payload, &event) != nil || event.Event != "sms_relay" || event.Message.ID == "" || len(event.Message.ID) > 80 || event.Message.Ciphertext == "" || len(event.Message.Ciphertext) > 48*1024 {
+				continue
+			}
+			// Live relay frames are volatile: they carry only client-encrypted data and are
+			// never added to the store or written to the server's durable snapshot.
+			s.mu.Lock()
+			frame, _ := json.Marshal(struct {
+				Event   string `json:"event"`
+				Message struct {
+					ID         string `json:"message_id"`
+					Ciphertext string `json:"ciphertext"`
+				} `json:"message"`
+			}{Event: "sms_relay", Message: event.Message})
+			for peer, peerID := range s.peers {
+				if peerID == d.ID {
+					continue
+				}
+				if target := s.peerSignals[peer]; target != nil {
+					select {
+					case target <- frame:
+					default:
+					}
+				}
+			}
+			s.mu.Unlock()
 		}
 	}()
 	// Exactly one writer per connection. Slow clients never hold the store lock.
 	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-done:
 				return
-			case <-signal:
+			case <-ticker.C:
+				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)) != nil {
+					conn.Close()
+					return
+				}
+			case frame := <-signal:
 				_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
-				if conn.WriteJSON(map[string]string{"event": "changed"}) != nil {
+				if conn.WriteMessage(websocket.TextMessage, frame) != nil {
 					conn.Close()
 					return
 				}
@@ -796,6 +839,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request, d Device) {
 
 // Called under mu; coalesce notifications because clients fetch from their cursor.
 func (s *Server) broadcast() {
+	frame := []byte(`{"event":"changed"}`)
 	for c, id := range s.peers {
 		device, ok := s.store.Devices[id]
 		if !ok || !device.Active || device.Expires <= time.Now().Unix() {
@@ -805,7 +849,7 @@ func (s *Server) broadcast() {
 			continue
 		}
 		select {
-		case s.peerSignals[c] <- struct{}{}:
+		case s.peerSignals[c] <- frame:
 		default:
 		}
 	}

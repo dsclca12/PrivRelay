@@ -119,14 +119,19 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                 return const Center(child: CircularProgressIndicator());
               }
               final rows = snapshot.data!;
+              final live = widget.quarantine
+                  ? const <SmsMessage>[]
+                  : r.liveRelays;
               return RefreshIndicator(
                 onRefresh: r.sync,
                 child: ListView.builder(
                   physics: const AlwaysScrollableScrollPhysics(),
                   padding: const EdgeInsets.all(12),
-                  itemCount: rows.isEmpty ? 1 : rows.length + 1,
+                  itemCount: rows.isEmpty && live.isEmpty
+                      ? 1
+                      : live.length + rows.length + 1,
                   itemBuilder: (context, i) {
-                    if (rows.isEmpty) {
+                    if (rows.isEmpty && live.isEmpty) {
                       return Padding(
                         padding: const EdgeInsets.symmetric(
                           vertical: 64,
@@ -161,7 +166,25 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                         ),
                       );
                     }
-                    if (i == rows.length) {
+                    if (i < live.length) {
+                      final message = live[i];
+                      return Card(
+                        color: Theme.of(context).colorScheme.secondaryContainer,
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: const Icon(Icons.bolt),
+                          title: Text(message.sender),
+                          subtitle: Text(
+                            '${message.body}\n实时副本仅驻留内存；收件箱由加密同步保存',
+                            maxLines: 4,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          isThreeLine: true,
+                        ),
+                      );
+                    }
+                    final rowIndex = i - live.length;
+                    if (rowIndex == rows.length) {
                       return rows.length < limit
                           ? const SizedBox(height: 24)
                           : TextButton(
@@ -171,7 +194,7 @@ class _InboxPageState extends ConsumerState<InboxPage> {
                               child: const Text('加载更多'),
                             );
                     }
-                    final m = rows[i];
+                    final m = rows[rowIndex];
                     final date = DateTime.fromMillisecondsSinceEpoch(
                       m.receivedAt,
                     ).toLocal();

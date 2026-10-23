@@ -68,7 +68,7 @@ E2EE 新消息不经过服务端分类、全文搜索或纠错审核；当前客
 | DELETE | `/api/v1/devices/{id}` | 撤销设备，关闭其 WebSocket，返回 `{revoked:true}` |
 | PUT | `/api/v1/devices/{id}/role` | 管理员设置设备角色 `admin / editor / viewer`；不能降级最后一个有效管理员 |
 | GET | `/api/v1/status` | 消息 / 分类 / 隔离 / 设备连接 / 待复核统计 |
-| GET | `/api/v1/ws` | 升级 WebSocket，仅推送 `{"event":"changed"}` |
+| GET | `/api/v1/ws` | Bearer 认证升级 WebSocket；双向心跳与 `changed` 通知。Android 可发送 `sms_relay`（消息 ID + 客户端 E2EE 密文），服务端只转给其他在线设备，不写入存储；离线补发仍走加密游标同步 |
 
 设备角色以已配对设备为主体：`admin` 可管理配对、设备、规则、AI 配置和导出；`editor` 可同步消息、发起归档/恢复/纠错及撤回授权；`viewer` 仅可读取。旧快照缺少角色时按管理员兼容。管理员生成配对码时选择新设备角色，默认 `editor`。未认证配对接口仍要求一次性码和设备签名。
 

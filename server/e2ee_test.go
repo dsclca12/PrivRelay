@@ -9,11 +9,21 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func e2eeRegistration(t *testing.T, code string) map[string]any {
+	return e2eeRegistrationForDevice(t, "encrypted-device-0001", code)
+}
+
+func e2eeRegistrationForDevice(t *testing.T, id, code string) map[string]any {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -21,13 +31,104 @@ func e2eeRegistration(t *testing.T, code string) map[string]any {
 	}
 	der, _ := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	public := base64.StdEncoding.EncodeToString(der)
-	id, nonce := "encrypted-device-0001", randomToken()
+	nonce := randomToken()
 	digest := sha256.Sum256([]byte(id + "\n" + public + "\n" + nonce + "\n" + code + "\ne2ee-v1"))
 	signature, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	return map[string]any{"device_id": id, "name": "Synthetic E2EE device", "public_key": public, "nonce": nonce, "pairing_code": code, "signature": base64.StdEncoding.EncodeToString(signature), "e2ee": true}
+}
+
+func TestE2EEMultiDeviceRealtimeOfflineAndReconnect(t *testing.T) {
+	s, deviceAToken := enableE2EEFixture(t)
+	// Pair a second independently authenticated device using the normal pairing API.
+	codeResponse := call(t, s, "POST", "/api/v1/pairing-codes", deviceAToken, nil)
+	var pairing struct {
+		Code string `json:"pairing_code"`
+	}
+	if codeResponse.Code != 201 || json.Unmarshal(codeResponse.Body.Bytes(), &pairing) != nil || pairing.Code == "" {
+		t.Fatal("could not create second-device pairing code", codeResponse.Code, codeResponse.Body)
+	}
+	register := call(t, s, "POST", "/api/v1/devices/register", "", e2eeRegistrationForDevice(t, "encrypted-device-0002", pairing.Code))
+	var deviceB struct {
+		Token string `json:"token"`
+	}
+	if register.Code != 201 || json.Unmarshal(register.Body.Bytes(), &deviceB) != nil || deviceB.Token == "" {
+		t.Fatal("could not pair second E2EE device", register.Code, register.Body)
+	}
+
+	ts := httptest.NewServer(s.handler())
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/ws"
+	dial := func(token string) *websocket.Conn {
+		t.Helper()
+		conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Authorization": []string{"Bearer " + token}})
+		if err != nil {
+			t.Fatal("websocket connect", err)
+		}
+		return conn
+	}
+	deviceA, deviceBConn := dial(deviceAToken), dial(deviceB.Token)
+	defer deviceA.Close()
+	defer deviceBConn.Close()
+
+	volatileID := "live-sms-message-0001"
+	volatileCiphertext := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 40))
+	revisionBeforeRelay := s.store.Revision
+	if err := deviceA.WriteJSON(map[string]any{"event": "sms_relay", "message": map[string]string{"message_id": volatileID, "ciphertext": volatileCiphertext}}); err != nil {
+		t.Fatal("send live relay", err)
+	}
+	deviceBConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var relay map[string]any
+	if err := deviceBConn.ReadJSON(&relay); err != nil {
+		t.Fatal("second device missed live relay", err)
+	}
+	gotMessage, ok := relay["message"].(map[string]any)
+	if relay["event"] != "sms_relay" || !ok || gotMessage["message_id"] != volatileID || gotMessage["ciphertext"] != volatileCiphertext || len(gotMessage) != 2 {
+		t.Fatal("unexpected live relay payload", relay)
+	}
+	s.mu.Lock()
+	_, persisted := s.store.EncryptedMessages[volatileID]
+	revisionUnchanged := s.store.Revision == revisionBeforeRelay
+	s.mu.Unlock()
+	if persisted || !revisionUnchanged {
+		t.Fatal("live-only SMS was stored or changed durable revision")
+	}
+
+	// A live frame is not replayed to a reconnecting/offline device. The sender's
+	// normal encrypted sync is the durable fallback and is visible by cursor.
+	deviceBConn.Close()
+	message := EncryptedMessage{ID: "offline-sms-message-0001", Received: time.Now().UnixMilli(), Ciphertext: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, 40))}
+	upload := call(t, s, "POST", "/api/v2/encrypted-messages/sync", deviceAToken, encryptedBatch{Messages: []EncryptedMessage{message}})
+	if upload.Code != 200 {
+		t.Fatal("offline durable sync failed", upload.Code, upload.Body)
+	}
+	deviceBConn = dial(deviceB.Token)
+	defer deviceBConn.Close()
+	page := call(t, s, "GET", "/api/v2/encrypted-messages?cursor=0&limit=50", deviceB.Token, nil)
+	var synced struct {
+		Messages []EncryptedMessage `json:"messages"`
+		Cursor   int64              `json:"cursor"`
+	}
+	if page.Code != 200 || json.Unmarshal(page.Body.Bytes(), &synced) != nil || len(synced.Messages) != 1 || synced.Messages[0].ID != message.ID || synced.Messages[0].Ciphertext != message.Ciphertext || synced.Cursor <= 0 {
+		t.Fatal("offline cursor sync did not recover encrypted SMS", page.Code, page.Body)
+	}
+
+	// Same ciphertext retry is idempotent; changing ciphertext requires a current
+	// base revision, which prevents an old device from silently overwriting it.
+	if retry := call(t, s, "POST", "/api/v2/encrypted-messages/sync", deviceAToken, encryptedBatch{Messages: []EncryptedMessage{message}}); retry.Code != 200 {
+		t.Fatal("idempotent retry failed", retry.Code, retry.Body)
+	}
+	conflict := message
+	conflict.Ciphertext = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{8}, 40))
+	if stale := call(t, s, "POST", "/api/v2/encrypted-messages/sync", deviceAToken, encryptedBatch{Messages: []EncryptedMessage{conflict}}); stale.Code != 409 {
+		t.Fatal("stale ciphertext overwrite was not rejected", stale.Code, stale.Body)
+	}
+	params := call(t, s, "GET", "/api/v2/crypto/params", deviceB.Token, nil)
+	if params.Code != 200 || !strings.Contains(params.Body.String(), `"iterations":600000`) || strings.Contains(params.Body.String(), message.Ciphertext) {
+		t.Fatal("crypto parameters unavailable or leaked message payload", params.Code, params.Body)
+	}
 }
 
 func enableE2EEFixture(t *testing.T) (*Server, string) {

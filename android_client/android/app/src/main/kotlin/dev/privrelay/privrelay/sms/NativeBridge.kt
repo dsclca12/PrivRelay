@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import android.util.Base64
 import dev.privrelay.privrelay.R
 
-class NativeBridge(private val context:Context, messenger:BinaryMessenger, private val activity:Activity? = null) {
+class NativeBridge(private val context:Context, messenger:BinaryMessenger, private val activity:Activity? = null, private val persistentOwner:Boolean = activity != null) {
     private val channel = MethodChannel(messenger,"dev.privrelay/sms")
     private var vaultCachePassphrase:String?=null
     private var vaultCacheSalt:String?=null
@@ -41,11 +41,22 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
     private var pendingAuthentication:MethodChannel.Result?=null
     private var pendingSmsRole:MethodChannel.Result?=null
     init {
-        if(activity!=null) foreground=this
+        if(persistentOwner) synchronized(NativeBridge::class.java) {
+            if(activity==null) serviceBridge=this else activityBridge=this
+        }
         channel.setMethodCallHandler { call,result ->
             try {
                 when(call.method) {
                     "status" -> result.success(mapOf("sms" to granted(Manifest.permission.RECEIVE_SMS),"read_sms" to granted(Manifest.permission.READ_SMS),"send_sms" to granted(Manifest.permission.SEND_SMS),"default_sms" to isDefaultSmsApp(),"notifications" to (Build.VERSION.SDK_INT<33 || granted(Manifest.permission.POST_NOTIFICATIONS)),"foreground_sync" to ForegroundSyncService.enabled(context),"spool_count" to Spool(context).use{it.count()}))
+                    "takeLiveRelays" -> result.success(takeLiveRelays())
+                    "publishLiveRelay" -> {
+                        val values=call.arguments as? Map<*,*> ?: error("Invalid live relay envelope")
+                        val message=values.entries.associate { (key,value) ->
+                            (key as? String ?: error("Invalid live relay field")) to (value ?: error("Null live relay field"))
+                        }
+                        publishLiveRelay(message)
+                        result.success(null)
+                    }
                     "authenticate" -> {
                         val owner=activity
                         val keyguard=context.getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
@@ -181,7 +192,7 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
         pendingPermission=result;activity.requestPermissions(arrayOf(permission),721)
     }
     private fun releaseLock(){if(ownsLock){ownsLock=false;consumer.set(false)}}
-    fun close(){pendingAuthentication?.success(false);pendingAuthentication=null;pendingSmsRole?.success(false);pendingSmsRole=null;releaseLock();vaultCachePassphrase=null;vaultCacheSalt=null;vaultCacheKey=null;if(foreground===this)foreground=null;channel.setMethodCallHandler(null);pendingPermission?.success(false);pendingPermission=null}
+    fun close(){pendingAuthentication?.success(false);pendingAuthentication=null;pendingSmsRole?.success(false);pendingSmsRole=null;releaseLock();vaultCachePassphrase=null;vaultCacheSalt=null;vaultCacheKey=null;synchronized(NativeBridge::class.java){if(activityBridge===this)activityBridge=null;if(serviceBridge===this)serviceBridge=null};channel.setMethodCallHandler(null);pendingPermission?.success(false);pendingPermission=null}
     private fun keyStore()=KeyStore.getInstance("AndroidKeyStore").apply{load(null)}
     @Synchronized private fun vaultKey(passphrase:String,salt:String):SecretKeySpec {
         require(passphrase.length >= 12 && passphrase.all { it.code in 33..126 }) { "Vault passphrase must contain at least 12 visible ASCII characters" }
@@ -237,7 +248,22 @@ class NativeBridge(private val context:Context, messenger:BinaryMessenger, priva
     }
     companion object {
         private val consumer=AtomicBoolean(false)
-        private var foreground:NativeBridge?=null
-        fun changed(){Handler(Looper.getMainLooper()).post{foreground?.channel?.invokeMethod("changed",null)}}
+        private var activityBridge:NativeBridge?=null
+        private var serviceBridge:NativeBridge?=null
+        private val relayLock=Any()
+        private val liveRelays=ArrayDeque<Map<String,Any>>()
+        private fun takeLiveRelays():List<Map<String,Any>> = synchronized(relayLock) {
+            liveRelays.toList().also { liveRelays.clear() }
+        }
+        private fun publishLiveRelay(message:Map<String,Any>) { synchronized(relayLock) {
+            liveRelays.removeAll { it["message_id"] == message["message_id"] }
+            liveRelays.addFirst(HashMap(message))
+            while(liveRelays.size>30) liveRelays.removeLast()
+        };Handler(Looper.getMainLooper()).post { activityBridge?.channel?.invokeMethod("liveRelay",message) } }
+        fun changed(message:Map<String,Any>? = null){Handler(Looper.getMainLooper()).post{
+            val bridge=serviceBridge ?: activityBridge
+            if(message!=null) bridge?.channel?.invokeMethod("smsReceived",message)
+            bridge?.channel?.invokeMethod("changed",null)
+        }}
     }
 }

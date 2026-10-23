@@ -42,6 +42,12 @@ class SmsPlatform {
   Future<void> unlock() => channel.invokeMethod('unlock');
   Future<void> setForegroundSync(bool enabled) =>
       channel.invokeMethod('foregroundSync', enabled);
+  Future<List<Map<String, dynamic>>> takeLiveRelays() async =>
+      (await channel.invokeListMethod('takeLiveRelays') ?? [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+  Future<void> publishLiveRelay(Map<String, dynamic> message) =>
+      channel.invokeMethod('publishLiveRelay', message);
   Future<Map<String, dynamic>> identity() async =>
       Map<String, dynamic>.from((await channel.invokeMapMethod('identity'))!);
   Future<String> sign(String value) async =>

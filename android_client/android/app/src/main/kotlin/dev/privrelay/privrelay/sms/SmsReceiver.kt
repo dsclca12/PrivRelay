@@ -33,8 +33,9 @@ class SmsReceiver: BroadcastReceiver() {
                 android.util.Log.w("PrivRelaySms", "System SMS provider insert failed", error)
             }
         }
-        Spool(context).use { it.insert(sender,body,parts.first().timestampMillis,sub,slot) }
-        NativeBridge.changed()
+        val messageId=Spool(context).use { it.insert(sender,body,parts.first().timestampMillis,sub,slot) }
+        NativeBridge.changed(mapOf("message_id" to messageId,"sender" to sender,"body" to body,
+            "received_at" to parts.first().timestampMillis,"subscription_id" to sub,"slot" to slot))
         SyncWorker.enqueue(context)
     }
 }

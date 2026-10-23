@@ -13,6 +13,19 @@ import android.content.Intent
 class TestSmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (!dev.privrelay.privrelay.BuildConfig.DEBUG || dev.privrelay.privrelay.BuildConfig.FLAVOR != "dev") return
+        when (intent.getStringExtra("action")) {
+            "start_foreground_sync" -> {
+                context.getSharedPreferences("runtime", 0).edit().putBoolean("background", true).apply()
+                ForegroundSyncService.setEnabled(context, true)
+                resultData = "foreground_sync_started"
+                return
+            }
+            "stop_foreground_sync" -> {
+                ForegroundSyncService.setEnabled(context, false)
+                resultData = "foreground_sync_stopped"
+                return
+            }
+        }
         if (intent.getBooleanExtra("status", false) || intent.getStringExtra("action") == "status") {
             resultData = "spool_count=" + Spool(context).use { it.count() }
             return
